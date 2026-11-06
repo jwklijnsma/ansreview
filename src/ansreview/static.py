@@ -333,7 +333,7 @@ class StaticChecker:
                              suggestion="Use key-based auth; PermitRootLogin prohibit-password or no.")
 
         # AR015: debug printing secrets
-        if module in DEBUG_MODULES:
+        if module in DEBUG_MODULES and not _truthy(m.get("no_log", False)):
             target = str(args.get("var", "")) + " " + str(args.get("msg", ""))
             if re.search(r"(pass(word)?|secret|token|api_?key)", target, re.I):
                 self.add("AR015", Severity.MEDIUM, rel, line,

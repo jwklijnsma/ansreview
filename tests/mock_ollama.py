@@ -35,6 +35,8 @@ class _Handler(BaseHTTPRequestHandler):
         req = json.loads(self.rfile.read(length) or b"{}")
         _Handler.calls.append(req)
         prompt = req["messages"][-1]["content"]
+        if req["messages"][0]["content"].startswith("You fix Ansible code"):
+            return self._fix(prompt)
         files = re.findall(r"===== FILE: (\S+) =====", prompt)
         findings = []
         if any(f.endswith("handlers/main.yml") for f in files):
@@ -56,6 +58,36 @@ class _Handler(BaseHTTPRequestHandler):
         # wrap in a code fence on purpose to exercise the lenient parser
         self._send(200, {"message": {"role": "assistant", "content": f"```json\n{content}\n```"},
                          "prompt_eval_count": len(prompt) // 4, "eval_count": 50})
+
+
+    def _fix(self, prompt: str):
+        content = "\n".join(re.sub(r"^\s*\d+ \| ?", "", l)
+                            for l in prompt.split("File content:\n", 1)[1].splitlines())
+        results = []
+        for idx, rule in re.findall(r"^\[(\d+)\] line \S+ · \w+ · llm:([\w-]+)", prompt, re.M):
+            idx = int(idx)
+            if rule == "handler-never-notified":
+                results.append({"id": idx, "action": "fix", "reason": "add listen",
+                                "edits": [{"old": "- name: Restart nginx\n  ansible.builtin.service:",
+                                           "new": "- name: Restart nginx\n  listen: restart nginx\n"
+                                                  "  ansible.builtin.service:"}]})
+            elif rule == "unquoted-shell-var":
+                results.append({"id": idx, "action": "skip",
+                                "reason": "command module, no shell: false positive", "edits": []})
+            elif rule == "bad-edit":
+                results.append({"id": idx, "action": "fix", "reason": "x",
+                                "edits": [{"old": "this text is not in the file", "new": "y"}]})
+            elif rule == "rewrite-everything":
+                first = content.splitlines()[0]
+                results.append({"id": idx, "action": "fix", "reason": "x",
+                                "edits": [{"old": content.split(first, 1)[1].strip("\n"),
+                                           "new": "- name: replaced\n  ansible.builtin.ping:"}]})
+            elif rule == "breaks-yaml":
+                results.append({"id": idx, "action": "fix", "reason": "x",
+                                "edits": [{"old": "become: true", "new": "become: [true"}]})
+        body = json.dumps({"results": results})
+        self._send(200, {"message": {"role": "assistant", "content": body},
+                         "prompt_eval_count": 10, "eval_count": 10})
 
 
 def start() -> tuple[ThreadingHTTPServer, str]:

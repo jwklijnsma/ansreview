@@ -58,6 +58,39 @@ error, and `0` otherwise, so it works as a pipeline gate or pre-commit hook.
 sees the whole role for context, but only findings on **added or modified lines** are reported
 (use `--diff-scope files` to report everything in the changed files).
 
+## Automatic fixes
+
+```bash
+ansreview fix ~/git/infra                       # uses .ansreview/report.json from your last scan
+ansreview fix ~/git/infra --dry-run             # only write .ansreview/fix.patch
+ansreview fix ~/git/infra --only roles/keycloak # one role
+ansreview fix ~/git/infra --vault-password-file ~/.vault-pass   # also vault hard-coded secrets
+```
+
+`fix` works in a scratch copy of the repo, in three stages:
+
+1. **Model fixes.** For every model finding at or above `medium` with confidence of at least 0.8, the
+   model first checks whether the finding is real. False positives, such as `inventory_hostname`
+   in `command:` flagged as injection, are declined. Real findings get minimal exact
+   search/replace edits. An edit is rejected if it doesn't match the file exactly once, breaks
+   the YAML, or rewrites too much of the file.
+2. **Built-in fixes.** These are deterministic and use fresh line numbers. They add
+   `no_log: true` (AR002, AR015), set world-writable modes to `0644` (or `0755` for
+   directories) (AR006), and encrypt hard-coded secrets in place with ansible-vault when you pass
+   `--vault-password-file` (AR001). Risky changes such as sshd settings, SELinux, http→https and
+   checksums are listed under **Needs a human** and left alone.
+3. **`ansible-lint --fix`** for mechanical rules: FQCN, free-form arguments, name casing and
+   YAML formatting. Comments are kept. Limit it with `--lint-fix-rules fqcn,name`, or skip it with
+   `--no-lint-fix`.
+
+Every changed YAML file must still parse, or it is reverted. Results are written to your working
+tree but **never committed**. Review them with `git diff` and undo with `git checkout -- .`.
+`.ansreview/fix-report.md` lists what was fixed, declined, failed or needs a human, and
+`.ansreview/fix.patch` holds the diff. `fix` refuses to run on a repo with uncommitted changes
+(override with `--allow-dirty`), so the diff only ever shows ansreview's work.
+
+Vaulting a secret does not remove it from git history, so **rotate it**.
+
 ## Configure
 
 `ansreview init` writes a sample `.ansreview.yml`. Settings are read in this order, later wins:
@@ -76,6 +109,8 @@ built-in defaults, `~/.ansreview.yml`, the repo's `.ansreview.yml`, environment 
 | `min_confidence` | `0.5` | drop LLM findings the model is unsure about |
 | `lint_profile` | – | e.g. `production` |
 | `lint_offline` | `true` | `false` lets ansible-lint install `requirements.yml` collections |
+| `fix_min_severity` / `fix_min_confidence` | `medium` / `0.8` | which model findings `fix` may touch |
+| `lint_fix_rules` | `all` | write list for `ansible-lint --fix` |
 | `disabled_rules` | `[]` | AR or ansible-lint rule IDs |
 | `exclude` | sensible list | glob patterns |
 | `house_rules` | – | free text the model enforces, e.g. naming conventions |

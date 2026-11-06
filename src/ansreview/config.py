@@ -43,6 +43,9 @@ class Config:
         ".cache/**", "collections/ansible_collections/**",
         "**/.github/**", "**/molecule/**/.cache/**",
     ])
+    fix_min_severity: str = "medium"  # `fix`: only let the model fix findings at/above this
+    fix_min_confidence: float = 0.8   # `fix`: ...and at/above this confidence
+    lint_fix_rules: str = "all"       # `fix`: ansible-lint --fix write list ("all", "none", rule ids)
     house_rules: str = ""             # extra instructions appended to the LLM prompt
     disabled_rules: list[str] = field(default_factory=list)  # e.g. ["AR004", "no-changed-when"]
 

@@ -4,14 +4,17 @@ from __future__ import annotations
 
 import argparse
 from fnmatch import fnmatch
+import json
 from pathlib import Path
+import subprocess
 import sys
 import time
 
 from . import __version__, lint
 from .config import Config, load_config
 from .discover import discover, filter_units, git_changed_files, git_changed_lines
-from .models import ScanResult, Severity
+from .fix import Fixer, fix_report_md
+from .models import Finding, ScanResult, Severity
 from .ollama import OllamaClient
 from .report import terminal_summary, write_reports
 from .review import Reviewer
@@ -236,6 +239,135 @@ def cmd_init(a: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _load_report(path: Path) -> tuple[list[Finding], str]:
+    data = json.loads(path.read_text(encoding="utf-8"))
+    out = []
+    for d in data.get("findings", []):
+        try:
+            out.append(Finding(
+                rule=d["rule"], severity=Severity.parse(d.get("severity")), file=d["file"],
+                line=d.get("line"), message=d.get("message", ""), source=d.get("source", ""),
+                category=d.get("category", "general"), suggestion=d.get("suggestion", ""),
+                confidence=d.get("confidence"), end_line=d.get("end_line")))
+        except KeyError:
+            continue
+    return out, str(data.get("root", ""))
+
+
+def _git_dirty(root: Path) -> list[str] | None:
+    """Uncommitted paths (ignoring .ansreview/), or None when root is not a git repo."""
+    try:
+        proc = subprocess.run(["git", "-C", str(root), "status", "--porcelain", "--", ".",
+                               ":(exclude).ansreview"], capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if proc.returncode != 0:
+        return None
+    return [l[3:] for l in proc.stdout.splitlines() if l.strip()]
+
+
+def cmd_fix(a: argparse.Namespace) -> int:
+    root = Path(a.path).resolve()
+    if not root.is_dir():
+        print(f"error: {root} is not a directory", file=sys.stderr)
+        return EXIT_ERROR
+    cfg, warnings = load_config(root, Path(a.config) if a.config else None)
+    _apply_cli(cfg, a)
+    for attr in ("fix_min_severity", "fix_min_confidence", "lint_fix_rules"):
+        if getattr(a, attr, None) is not None:
+            setattr(cfg, attr, getattr(a, attr))
+    say = _progress(a.quiet)
+    for w in warnings:
+        say(f"warning: {w}")
+
+    dirty = _git_dirty(root)
+    if dirty is None and not a.dry_run:
+        say("warning: not a git repository; a backup of every changed file goes to .ansreview/backup/")
+    elif dirty and not (a.dry_run or a.allow_dirty):
+        print("error: the repository has uncommitted changes:\n  " + "\n  ".join(dirty[:10])
+              + ("\n  …" if len(dirty) > 10 else "")
+              + "\nCommit or stash them first so `git diff` shows only ansreview's fixes, "
+                "or pass --allow-dirty (or --dry-run).", file=sys.stderr)
+        return EXIT_ERROR
+
+    out_dir = Path(a.output) if a.output else root / ".ansreview"
+    findings: list[Finding] = []
+    if not a.no_llm:
+        report = Path(a.from_report) if a.from_report else out_dir / "report.json"
+        if not report.is_file():
+            say(f"No report at {report}; running a scan first…")
+            argv = ["scan", str(root), "-q", "-f", "json", "-o", str(report.parent)]
+            for flag, val in (("--host", a.host), ("--model", a.model), ("-c", a.config),
+                              ("--lang", a.lang)):
+                if val:
+                    argv += [flag, val]
+            for p in a.only or []:
+                argv += ["--only", p]
+            cmd_scan(build_parser().parse_args(argv))
+        if report.is_file():
+            findings, report_root = _load_report(report)
+            if report_root and Path(report_root).name != root.name:
+                say(f"warning: {report} was made for '{Path(report_root).name}', not '{root.name}'")
+            say(f"Using {report} ({sum(1 for f in findings if f.source == 'llm')} model findings)")
+
+    client = None
+    if not a.no_llm:
+        client = OllamaClient(cfg.ollama_host, cfg.model, api_key=cfg.api_key,
+                              timeout=int(cfg.timeout), retries=int(cfg.retries),
+                              temperature=0.0, num_ctx=int(cfg.num_ctx))
+        try:
+            client.version()
+        except Exception as exc:
+            say(f"warning: Ollama not reachable at {cfg.ollama_host} ({exc.__class__.__name__}); "
+                "model fixes skipped")
+            client = None
+
+    fixer = Fixer(root, cfg, client=client, vault_password_file=a.vault_password_file,
+                  lint_fix=not a.no_lint_fix, static_fix=not a.no_static_fix,
+                  only=a.only, say=say)
+    run = fixer.run(findings)
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    patch = out_dir / "fix.patch"
+    patch.write_text(run.diff(), encoding="utf-8")
+    written = []
+    if not a.dry_run:
+        backup = out_dir / "backup" / time.strftime("%Y%m%d-%H%M%S") if dirty is None else None
+        for rel, (old, new) in sorted(run.changed.items()):
+            target = root / rel
+            try:
+                current = target.read_text(encoding="utf-8", errors="surrogateescape")
+            except OSError as exc:
+                run.errors.append(f"{rel}: {exc}")
+                continue
+            if current != old:
+                run.errors.append(f"{rel}: changed on disk during the fix run; left alone")
+                continue
+            if backup:
+                (backup / rel).parent.mkdir(parents=True, exist_ok=True)
+                (backup / rel).write_text(old, encoding="utf-8", errors="surrogateescape")
+            target.write_text(new, encoding="utf-8", errors="surrogateescape")
+            written.append(rel)
+    report_md = out_dir / "fix-report.md"
+    report_md.write_text(fix_report_md(run, str(root), a.dry_run, cfg.language), encoding="utf-8")
+
+    if not a.quiet:
+        print("", file=sys.stderr)
+        for stage in ("llm", "static", "lint"):
+            print(f"  {stage:<6} fixed {run.count('fixed', stage):>3}   declined "
+                  f"{run.count('declined', stage):>3}   failed {run.count('failed', stage):>3}   "
+                  f"manual {run.count('manual', stage):>3}", file=sys.stderr)
+        for e in run.errors[:10]:
+            print(f"  ! {e}", file=sys.stderr)
+        verb = "would change" if a.dry_run else "changed"
+        print(f"\n{len(run.changed)} file(s) {verb}. Patch: {patch}\nReport: {report_md}",
+              file=sys.stderr)
+        if written and dirty is not None:
+            print("Review with `git diff`; undo everything with `git checkout -- .`",
+                  file=sys.stderr)
+    return EXIT_OK
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="ansreview",
@@ -276,6 +408,33 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("-q", "--quiet", action="store_true")
     s.set_defaults(func=cmd_scan)
 
+    fx = sub.add_parser("fix", help="automatically fix findings (model edits, AR fixes, ansible-lint --fix)")
+    common(fx)
+    fx.add_argument("--from-report", metavar="FILE",
+                    help="report.json to fix from (default <repo>/.ansreview/report.json; "
+                         "a scan runs first when it does not exist)")
+    fx.add_argument("--dry-run", action="store_true", help="only write fix.patch, change nothing")
+    fx.add_argument("--allow-dirty", action="store_true",
+                    help="run even with uncommitted changes in the repo")
+    fx.add_argument("--only", action="append", metavar="PATH", help="limit to paths (repeatable)")
+    fx.add_argument("--vault-password-file", metavar="FILE",
+                    help="encrypt hard-coded secrets (AR001) in place with ansible-vault")
+    fx.add_argument("--min-severity", dest="fix_min_severity",
+                    choices=[x.label for x in Severity],
+                    help="model fixes only for findings at/above this (default medium)")
+    fx.add_argument("--min-confidence", dest="fix_min_confidence", type=float,
+                    help="model fixes only at/above this confidence (default 0.8)")
+    fx.add_argument("--lint-fix-rules", help="ansible-lint --fix write list (default all)")
+    fx.add_argument("--no-llm", action="store_true", help="skip model fixes")
+    fx.add_argument("--no-static-fix", action="store_true", help="skip built-in AR fixes")
+    fx.add_argument("--no-lint-fix", action="store_true", help="skip ansible-lint --fix")
+    fx.add_argument("--lang", choices=["en", "nl"])
+    fx.add_argument("--workers", type=int)
+    fx.add_argument("--timeout", type=int)
+    fx.add_argument("-o", "--output", help="where reports live (default <repo>/.ansreview)")
+    fx.add_argument("-q", "--quiet", action="store_true")
+    fx.set_defaults(func=cmd_fix)
+
     d = sub.add_parser("doctor", help="check ansible-lint, Ollama and the model")
     common(d)
     d.set_defaults(func=cmd_doctor)
@@ -292,7 +451,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
-    if not argv or (argv[0] not in {"scan", "doctor", "rules", "init", "-h", "--help", "--version"}):
+    if not argv or (argv[0] not in {"scan", "fix", "doctor", "rules", "init", "-h", "--help",
+                                    "--version"}):
         argv.insert(0, "scan")
     args = build_parser().parse_args(argv)
     try:
