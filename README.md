@@ -22,6 +22,19 @@ ansreview doctor              # checks ansible-lint, Ollama and the model
 
 Requires Python 3.10+. ansible-lint is optional but recommended.
 
+### macOS (one command)
+
+```bash
+git clone https://github.com/jwklijnsma/-Ansreview.git && cd -- -Ansreview
+./scripts/install-macos.sh --host http://<ollama-host>:11434
+```
+
+The script finds a healthy Python 3.10–3.14 (it installs `python@3.13` via Homebrew if needed)
+and installs ansreview with ansible-lint into an isolated venv in `~/.local/share/ansreview`.
+It then links both tools into `~/.local/bin` and runs `ansreview doctor`. It also works when your
+global Python is broken by stray `.pth`/`sitecustomize` files (`No module named 'json'` during
+`pip install`). Add `--fix-site` to move those files to a backup folder.
+
 ## Use
 
 ```bash

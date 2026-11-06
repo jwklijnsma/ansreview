@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 
 from .models import Finding, Severity
 
@@ -23,6 +25,11 @@ IDEMPOTENCY_RULES = {"no-changed-when", "no-handler", "package-latest", "latest"
 
 
 def available() -> str | None:
+    # Prefer the ansible-lint installed next to this Python (same venv), even if
+    # that venv's bin/ is not on PATH.
+    sibling = Path(sys.executable).parent / "ansible-lint"
+    if sibling.is_file() and os.access(sibling, os.X_OK):
+        return str(sibling)
     return shutil.which("ansible-lint")
 
 
