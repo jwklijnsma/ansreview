@@ -1,0 +1,28 @@
+---
+- name: Install nginx
+  ansible.builtin.package:
+    name: nginx
+    state: latest
+
+- name: Create DB user
+  community.mysql.mysql_user:
+    name: app
+    password: "{{ db_password }}"
+    priv: "*.*:ALL"
+
+- name: Download app
+  ansible.builtin.get_url:
+    url: http://example.invalid/app.tar.gz
+    dest: /opt/app.tar.gz
+    validate_certs: false
+    mode: "0777"
+
+- name: Deploy config
+  ansible.builtin.template:
+    src: nginx.conf.j2
+    dest: /etc/nginx/nginx.conf
+  notify: restart nginx
+
+- name: Show token
+  ansible.builtin.debug:
+    var: api_token

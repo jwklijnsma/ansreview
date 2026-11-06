@@ -1,0 +1,5 @@
+---
+webserver_port: 8080
+db_password: "Sup3rS3cret-example"
+webserver_admin_user: admin
+api_token: "{{ vault_api_token }}"

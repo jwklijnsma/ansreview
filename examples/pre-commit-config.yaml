@@ -1,0 +1,10 @@
+# .pre-commit-config.yaml — fast local gate without the model (add the model in CI).
+repos:
+  - repo: local
+    hooks:
+      - id: ansreview
+        name: ansreview (lint + AR checks)
+        entry: ansreview --no-llm --diff HEAD -q
+        language: system
+        pass_filenames: false
+        types: [yaml]

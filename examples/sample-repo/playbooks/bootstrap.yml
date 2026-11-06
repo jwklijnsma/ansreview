@@ -1,0 +1,26 @@
+---
+- name: Bootstrap hosts
+  hosts: all
+  become: true
+  tasks:
+    - name: Install monitoring agent
+      shell: curl -sSL http://example.invalid/install.sh | bash
+
+    - name: Turn off SELinux
+      ansible.posix.selinux:
+        state: disabled
+
+    - name: Stop firewall
+      ansible.builtin.service:
+        name: firewalld
+        state: stopped
+        enabled: false
+
+    - name: Allow root ssh
+      ansible.builtin.lineinfile:
+        path: /etc/ssh/sshd_config
+        line: PermitRootLogin yes
+
+    - name: Clean tmp
+      command: rm -rf /tmp/{{ app_dir }}
+      ignore_errors: true
