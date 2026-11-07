@@ -201,3 +201,16 @@ def test_apply_edits_tolerates_whitespace_and_indent_shift():
     crlf = src.replace("\n", "\r\n")
     out = _apply_edits(crlf, [edit])
     assert out is not None and "mode: '0644'\r\n" in out and "\n" not in out.replace("\r\n", "")
+
+
+@needs_git
+def test_untracked_non_ansible_files_do_not_block_fix(repo, ollama):
+    from ansreview.cli import _git_dirty
+    (repo / "docs").mkdir()
+    (repo / "docs" / "index.md").write_text("# docs\n")
+    assert _git_dirty(repo) == []
+    (repo / "docs" / "extra.yml").write_text("a: 1\n")
+    assert _git_dirty(repo) == ["docs/extra.yml"]
+    (repo / "docs" / "extra.yml").unlink()
+    (repo / "site.yml").write_text((repo / "site.yml").read_text() + "\n")
+    assert _git_dirty(repo) == ["site.yml"]

@@ -270,16 +270,32 @@ def _load_report(path: Path) -> tuple[list[Finding], str]:
     return out, str(data.get("root", ""))
 
 
+FIXABLE_SUFFIXES = (".yml", ".yaml", ".j2", ".cfg", ".ini")
+
+
 def _git_dirty(root: Path) -> list[str] | None:
-    """Uncommitted paths (ignoring .ansreview/), or None when root is not a git repo."""
+    """Uncommitted paths ansreview could touch, or None when root is not a git repo.
+
+    Modified tracked files always count. Untracked files only count when fix could edit
+    them (YAML, templates, ...): an untracked docs/ or build output does not block a run,
+    because `git checkout -- .` would not undo a change to it anyway."""
     try:
-        proc = subprocess.run(["git", "-C", str(root), "status", "--porcelain", "--", ".",
-                               ":(exclude).ansreview"], capture_output=True, text=True, timeout=60)
+        proc = subprocess.run(["git", "-C", str(root), "status", "--porcelain", "-uall", "--",
+                               ".", ":(exclude).ansreview"],
+                              capture_output=True, text=True, timeout=60)
     except (OSError, subprocess.TimeoutExpired):
         return None
     if proc.returncode != 0:
         return None
-    return [l[3:] for l in proc.stdout.splitlines() if l.strip()]
+    out = []
+    for line in proc.stdout.splitlines():
+        if not line.strip():
+            continue
+        status, path = line[:2], line[3:].strip('"')
+        if status == "??" and not path.endswith(FIXABLE_SUFFIXES):
+            continue
+        out.append(path)
+    return out
 
 
 def cmd_fix(a: argparse.Namespace) -> int:
