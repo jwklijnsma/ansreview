@@ -198,33 +198,101 @@ def _excerpt(text: str, findings: list[Finding], context: int, full_below: int) 
     return "\n".join(out)
 
 
-def _apply_edits(content: str, edits: list[dict]) -> str | None:
-    """Apply exact search/replace edits; None if any edit does not match exactly once."""
-    out = content
-    for e in edits:
-        old, new = str(e.get("old", "")), str(e.get("new", ""))
-        if not old or old == new:
-            if old == new:
+ELLIPSIS_LINE = re.compile(r"^\s*(\.\.\.|…)\s*$")
+
+
+def _indent(line: str) -> int:
+    return len(line) - len(line.lstrip(" "))
+
+
+def _locate_lines(content: str, old: str) -> tuple[int, int, int] | None:
+    """Find `old` as a block of whole lines, ignoring trailing whitespace, CRLF and a
+    uniform indentation shift (the usual reasons a model's copy does not match).
+    Returns (first_line, last_line_exclusive, indent_delta) for a UNIQUE match, else None."""
+    want = [l.rstrip() for l in old.strip("\n").splitlines()]
+    if not want or any(ELLIPSIS_LINE.match(l) for l in want):
+        return None
+    lines = content.splitlines()
+    n = len(want)
+    hits = []
+    for i in range(len(lines) - n + 1):
+        delta = None
+        for w, have in zip(want, lines[i:i + n]):
+            have = have.rstrip()
+            if w.strip() != have.strip():
+                break
+            if not w.strip():
                 continue
-            return None
-        if out.count(old) != 1:
-            stripped = NUM_PREFIX.sub("", old)      # model copied the line numbers
-            if stripped and out.count(stripped) == 1:
-                old, new = stripped, NUM_PREFIX.sub("", new)
-            else:
+            d = _indent(have) - _indent(w)
+            if delta is None:
+                delta = d
+            elif d != delta:
+                break
+        else:
+            hits.append((i, i + n, delta or 0))
+            if len(hits) > 1:
                 return None
-        out = out.replace(old, new, 1)
+    return hits[0] if hits else None
+
+
+def _shift(text: str, delta: int) -> list[str]:
+    out = []
+    for l in text.strip("\n").splitlines():
+        if not l.strip():
+            out.append("")
+        elif delta >= 0:
+            out.append(" " * delta + l.rstrip())
+        else:
+            out.append(l[min(-delta, _indent(l)):].rstrip())
     return out
 
 
-def _edit_too_large(old: str, new: str) -> bool:
+def _apply_one(out: str, old: str, new: str) -> str | None:
+    if out.count(old) == 1:
+        return out.replace(old, new, 1)
+    stripped = NUM_PREFIX.sub("", old)              # model copied the line numbers
+    if stripped != old:
+        old, new = stripped, NUM_PREFIX.sub("", new)
+        if out.count(old) == 1:
+            return out.replace(old, new, 1)
+    hit = _locate_lines(out, old)
+    if not hit:
+        return None
+    start, end, delta = hit
+    eol = "\r\n" if "\r\n" in out else "\n"
+    lines = out.splitlines(keepends=True)
+    trailing = lines[end - 1].endswith(("\n", "\r"))
+    repl = _shift(new, delta) if new.strip() else []
+    block = eol.join(repl) + (eol if repl and trailing else "")
+    return "".join(lines[:start]) + block + "".join(lines[end:])
+
+
+def _apply_edits(content: str, edits: list[dict]) -> str | None:
+    """Apply search/replace edits; None if any edit does not match exactly one place.
+    Exact match first, then a whitespace-tolerant whole-line match."""
+    out = content
+    for e in edits:
+        old, new = str(e.get("old", "")), str(e.get("new", ""))
+        if old == new:
+            continue
+        if not old.strip():
+            return None
+        out = _apply_one(out, old, new)
+        if out is None:
+            return None
+    return out
+
+
+def _edit_too_large(old: str, new: str, fixes: int = 1) -> bool:
     a, b = old.splitlines(), new.splitlines()
     sm = difflib.SequenceMatcher(None, a, b, autojunk=False)
     changed = sum(max(i2 - i1, j2 - j1) for tag, i1, i2, j1, j2 in sm.get_opcodes()
                   if tag != "equal")
     removed = sum(i2 - i1 for tag, i1, i2, _, _ in sm.get_opcodes() if tag in ("delete", "replace"))
-    return changed > max(15, int(len(a) * 0.35)) or removed - sum(
-        j2 - j1 for tag, _, _, j1, j2 in sm.get_opcodes() if tag in ("insert", "replace")) > 10
+    n = max(1, fixes)
+    limit = min(max(15 * n, int(len(a) * 0.35)), max(15, int(len(a) * 0.7)))
+    return changed > limit or removed - sum(
+        j2 - j1 for tag, _, _, j1, j2 in sm.get_opcodes() if tag in ("insert", "replace")) > 10 * n
 
 
 class Fixer:
@@ -427,7 +495,8 @@ class Fixer:
                                                  str(exc)[:200]))
                 self.run_info.errors.append(f"{rel}: {type(exc).__name__}: {exc}")
 
-        if content != original and _edit_too_large(original, content):
+        n_fixed = sum(1 for r in results if r.action == "fixed")
+        if content != original and _edit_too_large(original, content, n_fixed):
             for r in results:
                 if r.action == "fixed":
                     r.action, r.note = "failed", "model rewrote too much of the file; reverted"
@@ -458,6 +527,10 @@ class Fixer:
             if new is None:
                 results.append(FixResult(rel, f.line, f.rule, "llm", "failed",
                                          "edit did not match the file exactly; nothing changed"))
+                continue
+            if _edit_too_large(content, new):
+                results.append(FixResult(rel, f.line, f.rule, "llm", "failed",
+                                         "edit for this finding was too large; skipped"))
                 continue
             if _is_yaml(rel) and not yaml_ok(new):
                 results.append(FixResult(rel, f.line, f.rule, "llm", "failed",

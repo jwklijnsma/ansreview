@@ -92,7 +92,7 @@ def test_fix_end_to_end(repo, ollama):
 
     report = (repo / ".ansreview" / "fix-report.md").read_text()
     assert "Declined by the model" in report and "unquoted-shell-var" in report
-    assert "did not match" in report and "invalid YAML" in report and "rewrote too much" in report
+    assert "did not match" in report and "invalid YAML" in report and ("rewrote too much" in report or "too large" in report)
     assert "low-confidence" not in report               # below threshold: never sent
     patch = (repo / ".ansreview" / "fix.patch").read_text()
     assert "+  listen: restart nginx" in patch
@@ -179,3 +179,25 @@ def test_fix_mode_directory_and_freeform():
     f = Finding("AR006", Severity.HIGH, "t.yml", 1, "", "static", end_line=2)
     assert _fix_mode(lines, f) == "0644"
     assert "mode=0644" in lines[1]
+
+
+def test_apply_edits_tolerates_whitespace_and_indent_shift():
+    from ansreview.fix import _apply_edits
+    src = ("- hosts: all\n  tasks:\n    - name: Copy\n      ansible.builtin.copy:\n"
+           "        src: a   \n        dest: /etc/a\n        mode: '0777'\n")
+    # model dropped 4 spaces of indentation and the trailing spaces
+    edit = {"old": "- name: Copy\n  ansible.builtin.copy:\n    src: a\n    dest: /etc/a\n"
+                   "    mode: '0777'",
+            "new": "- name: Copy\n  ansible.builtin.copy:\n    src: a\n    dest: /etc/a\n"
+                   "    mode: '0644'"}
+    out = _apply_edits(src, [edit])
+    assert out is not None and "        mode: '0644'\n" in out and "0777" not in out
+    assert _parses(out)
+    # ambiguous: same block twice -> refuse
+    assert _apply_edits(src + src.split("tasks:\n", 1)[1], [edit]) is None
+    # excerpt marker copied into "old" -> refuse
+    assert _apply_edits(src, [{"old": "- name: Copy\n...\n", "new": "x"}]) is None
+    # CRLF file
+    crlf = src.replace("\n", "\r\n")
+    out = _apply_edits(crlf, [edit])
+    assert out is not None and "mode: '0644'\r\n" in out and "\n" not in out.replace("\r\n", "")

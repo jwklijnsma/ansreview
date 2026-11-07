@@ -64,6 +64,16 @@ Rules:
   security weakness; medium = real risk in some conditions; low = minor; info = suggestion.
 - confidence: 0.0-1.0, how sure you are this is a real problem.
 - rule: a short kebab-case id such as "unquoted-shell-var" or "handler-never-notified".
+- Do NOT report (these are almost always false positives):
+  * generic "missing error handling / retries / rescue block" without a concrete failure
+    that would go unnoticed; Ansible stops on errors by default
+  * task or play naming and casing (ansible-lint covers this)
+  * `become`, `serial`, `delegate_to` or `run_once` as "privilege escalation" by themselves
+  * shell injection for variables not used in `shell:`/`command:`/`raw:`/`script:`, or in
+    `command:` without shell features (no shell is involved there)
+  * guesses about other files, roles or inventory you cannot see ("may be undefined")
+  * hard-coded paths, versions, group names or ports that are plain configuration
+  * something the code already does (check the lines before reporting)
 - If the code is fine, return an empty findings list. Fewer, accurate findings beat many guesses.
 Return ONLY JSON matching the schema."""
 
