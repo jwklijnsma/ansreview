@@ -91,6 +91,13 @@ tree but **never committed**. Review them with `git diff` and undo with `git che
 
 Vaulting a secret does not remove it from git history, so **rotate it**.
 
+**Speed.** Model fixes are sent in batches of `fix_batch_size` findings (default 4). Files longer
+than `fix_full_file_lines` are sent as excerpts around each finding, not as a whole, which cuts
+prompt time on big playbooks. Responses are streamed, so `timeout` is the longest the model may
+stay silent, not the total time. A batch that times out is split in half and tried again; it is
+never resent unchanged. Answers and timeouts are cached in `.ansreview/fix-cache.json`, so a
+re-run only asks about files that changed. Use `--no-cache` to ask again.
+
 ## Configure
 
 `ansreview init` writes a sample `.ansreview.yml`. Settings are read in this order, later wins:
@@ -103,13 +110,19 @@ built-in defaults, `~/.ansreview.yml`, the repo's `.ansreview.yml`, environment 
 | `api_key` | – | Bearer token if Ollama sits behind an auth proxy; ignored in a repo config |
 | `language` | `en` | `en` or `nl` |
 | `num_ctx` | `16384` | context window per request |
-| `workers` | `1` | parallel requests; raise with `OLLAMA_NUM_PARALLEL` |
+| `workers` | `1` | parallel requests; keep it at or below the server's `OLLAMA_NUM_PARALLEL` (queued requests count against `timeout`) |
+| `timeout` | `600` | max seconds without model output; env `ANSREVIEW_TIMEOUT` |
+| `deadline` | `0` | max seconds per request (`0` = 2 × `timeout`) |
+| `num_predict` | `4096` | cap on generated tokens; stops a model stuck repeating JSON |
+| `keep_alive` | `30m` | keeps the model loaded between requests |
 | `max_chars_per_unit` | `40000` | larger roles are split into several requests |
 | `fail_on` / `min_severity` | `high` / `info` | `info` `low` `medium` `high` `critical` |
 | `min_confidence` | `0.5` | drop LLM findings the model is unsure about |
 | `lint_profile` | – | e.g. `production` |
 | `lint_offline` | `true` | `false` lets ansible-lint install `requirements.yml` collections |
 | `fix_min_severity` / `fix_min_confidence` | `medium` / `0.8` | which model findings `fix` may touch |
+| `fix_batch_size` | `4` | findings per model request in `fix` (`--batch-size`) |
+| `fix_context_lines` / `fix_full_file_lines` | `25` / `120` | excerpt size for long files in `fix` |
 | `lint_fix_rules` | `all` | write list for `ansible-lint --fix` |
 | `disabled_rules` | `[]` | AR or ansible-lint rule IDs |
 | `exclude` | sensible list | glob patterns |

@@ -25,7 +25,10 @@ class Config:
     language: str = "en"              # "en" or "nl"
     temperature: float = 0.1
     num_ctx: int = 16384
-    timeout: int = 600                # seconds per LLM request
+    timeout: int = 600                # max seconds without output from Ollama (incl. queue wait)
+    deadline: int = 0                 # max seconds for one request (0 = 2 x timeout)
+    num_predict: int = 4096           # cap on generated tokens; stops runaway JSON loops
+    keep_alive: str = "30m"           # keep the model loaded between requests
     retries: int = 2
     workers: int = 1                  # parallel LLM requests (1 = one GPU)
     max_chars_per_unit: int = 40000   # split a unit when its source exceeds this
@@ -45,6 +48,9 @@ class Config:
     ])
     fix_min_severity: str = "medium"  # `fix`: only let the model fix findings at/above this
     fix_min_confidence: float = 0.8   # `fix`: ...and at/above this confidence
+    fix_batch_size: int = 4           # `fix`: findings per LLM request (split further on timeout)
+    fix_context_lines: int = 25       # `fix`: lines of context around each finding
+    fix_full_file_lines: int = 120    # `fix`: send the whole file when it is this short
     lint_fix_rules: str = "all"       # `fix`: ansible-lint --fix write list ("all", "none", rule ids)
     house_rules: str = ""             # extra instructions appended to the LLM prompt
     disabled_rules: list[str] = field(default_factory=list)  # e.g. ["AR004", "no-changed-when"]
@@ -86,6 +92,8 @@ ENV_MAP = {
     "ANSREVIEW_WORKERS": "workers",
     "ANSREVIEW_NUM_CTX": "num_ctx",
     "ANSREVIEW_TIMEOUT": "timeout",
+    "ANSREVIEW_NUM_PREDICT": "num_predict",
+    "ANSREVIEW_FIX_BATCH_SIZE": "fix_batch_size",
     "ANSREVIEW_FAIL_ON": "fail_on",
 }
 
@@ -127,7 +135,7 @@ def load_config(root: Path, explicit: Path | None = None) -> tuple[Config, list[
     if explicit:
         warnings += cfg.update(_read_yaml(explicit), source=str(explicit))
 
-    int_keys = {"workers", "num_ctx", "timeout"}
+    int_keys = {"workers", "num_ctx", "timeout", "num_predict", "fix_batch_size"}
     for env, key in ENV_MAP.items():
         val = os.environ.get(env)
         if val:

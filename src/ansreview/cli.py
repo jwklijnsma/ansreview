@@ -56,6 +56,14 @@ def _progress(quiet: bool):
     return emit
 
 
+def make_client(cfg: Config, temperature: float | None = None) -> OllamaClient:
+    return OllamaClient(cfg.ollama_host, cfg.model, api_key=cfg.api_key,
+                        timeout=int(cfg.timeout), retries=int(cfg.retries),
+                        temperature=float(cfg.temperature if temperature is None else temperature),
+                        num_ctx=int(cfg.num_ctx), num_predict=int(cfg.num_predict),
+                        deadline=int(cfg.deadline), keep_alive=str(cfg.keep_alive))
+
+
 def _apply_cli(cfg: Config, a: argparse.Namespace):
     for attr, key in [("model", "model"), ("host", "ollama_host"), ("lang", "language"),
                       ("workers", "workers"), ("num_ctx", "num_ctx"), ("fail_on", "fail_on"),
@@ -148,9 +156,7 @@ def cmd_scan(a: argparse.Namespace) -> int:
 
     summaries: dict[str, str] = {}
     if cfg.use_llm and units:
-        client = OllamaClient(cfg.ollama_host, cfg.model, api_key=cfg.api_key,
-                              timeout=int(cfg.timeout), retries=int(cfg.retries),
-                              temperature=float(cfg.temperature), num_ctx=int(cfg.num_ctx))
+        client = make_client(cfg)
         try:
             client.version()
             reachable = True
@@ -273,7 +279,7 @@ def cmd_fix(a: argparse.Namespace) -> int:
         return EXIT_ERROR
     cfg, warnings = load_config(root, Path(a.config) if a.config else None)
     _apply_cli(cfg, a)
-    for attr in ("fix_min_severity", "fix_min_confidence", "lint_fix_rules"):
+    for attr in ("fix_min_severity", "fix_min_confidence", "lint_fix_rules", "fix_batch_size"):
         if getattr(a, attr, None) is not None:
             setattr(cfg, attr, getattr(a, attr))
     say = _progress(a.quiet)
@@ -312,9 +318,7 @@ def cmd_fix(a: argparse.Namespace) -> int:
 
     client = None
     if not a.no_llm:
-        client = OllamaClient(cfg.ollama_host, cfg.model, api_key=cfg.api_key,
-                              timeout=int(cfg.timeout), retries=int(cfg.retries),
-                              temperature=0.0, num_ctx=int(cfg.num_ctx))
+        client = make_client(cfg, temperature=0.0)
         try:
             client.version()
         except Exception as exc:
@@ -324,7 +328,7 @@ def cmd_fix(a: argparse.Namespace) -> int:
 
     fixer = Fixer(root, cfg, client=client, vault_password_file=a.vault_password_file,
                   lint_fix=not a.no_lint_fix, static_fix=not a.no_static_fix,
-                  only=a.only, say=say)
+                  only=a.only, say=say, use_cache=not a.no_cache)
     run = fixer.run(findings)
 
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -429,8 +433,13 @@ def build_parser() -> argparse.ArgumentParser:
     fx.add_argument("--no-static-fix", action="store_true", help="skip built-in AR fixes")
     fx.add_argument("--no-lint-fix", action="store_true", help="skip ansible-lint --fix")
     fx.add_argument("--lang", choices=["en", "nl"])
-    fx.add_argument("--workers", type=int)
-    fx.add_argument("--timeout", type=int)
+    fx.add_argument("--workers", type=int,
+                    help="parallel model requests; match OLLAMA_NUM_PARALLEL on the server")
+    fx.add_argument("--timeout", type=int, help="max seconds without model output (default 600)")
+    fx.add_argument("--batch-size", dest="fix_batch_size", type=int,
+                    help="findings per model request (default 4; split further on timeout)")
+    fx.add_argument("--no-cache", action="store_true",
+                    help="ignore .ansreview/fix-cache.json and ask the model again")
     fx.add_argument("-o", "--output", help="where reports live (default <repo>/.ansreview)")
     fx.add_argument("-q", "--quiet", action="store_true")
     fx.set_defaults(func=cmd_fix)
