@@ -16,6 +16,7 @@ from .discover import discover, filter_units, git_changed_files, git_changed_lin
 from .fix import Fixer, fix_report_md
 from .models import Finding, ScanResult, Severity
 from .ollama import OllamaClient
+from .perf import speed_check
 from .report import terminal_summary, write_reports
 from .review import Reviewer
 from .static import RULE_DOCS, run_static
@@ -170,7 +171,7 @@ def cmd_scan(a: argparse.Namespace) -> int:
                 return EXIT_ERROR
         if reachable:
             res.model = cfg.model
-            reviewer = Reviewer(root, cfg, client, say)
+            reviewer = Reviewer(root, cfg, client, say, use_cache=not getattr(a, 'no_cache', False))
             res.findings += reviewer.review(units, list(res.findings))
             res.errors += reviewer.errors
             summaries = reviewer.summaries
@@ -216,6 +217,15 @@ def cmd_doctor(a: argparse.Namespace) -> int:
         print(f"✓ Ollama {client.version()} at {cfg.ollama_host}")
         if client.has_model():
             print(f"✓ model {cfg.model} is available")
+            if not getattr(a, "no_speed", False):
+                print("… measuring speed (two short requests)", flush=True)
+                try:
+                    lines, fast = speed_check(cfg)
+                    print("\n".join(lines))
+                except Exception as exc:
+                    fast = False
+                    print(f"✗ speed check failed: {exc}")
+                ok = ok and fast
         else:
             ok = False
             names = ", ".join(client.models()[:10]) or "none"
@@ -401,7 +411,9 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--min-confidence", type=float)
     s.add_argument("--workers", type=int)
     s.add_argument("--num-ctx", type=int)
-    s.add_argument("--timeout", type=int)
+    s.add_argument("--timeout", type=int, help="max seconds without model output (default 600)")
+    s.add_argument("--no-cache", action="store_true",
+                   help="ignore .ansreview/scan-cache.json and ask the model again")
     s.add_argument("--lint-profile")
     s.add_argument("--exclude", action="append", metavar="GLOB")
     s.add_argument("--disable", action="append", metavar="RULE")
@@ -446,6 +458,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     d = sub.add_parser("doctor", help="check ansible-lint, Ollama and the model")
     common(d)
+    d.add_argument("--no-speed", action="store_true", help="skip the speed check")
     d.set_defaults(func=cmd_doctor)
 
     r = sub.add_parser("rules", help="list built-in rules")

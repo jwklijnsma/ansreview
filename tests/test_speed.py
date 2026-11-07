@@ -89,3 +89,54 @@ def test_excerpt_only_sends_windows_for_large_files():
     assert " 500 | line500" in out and "line800" not in out and "..." in out
     assert len(out.splitlines()) < 40
     assert _excerpt("a\nb", [_f(1)], 5, 120).count("|") == 2
+
+
+def test_scan_splits_on_timeout_and_caches(slow, tmp_path):
+    from ansreview.models import Unit
+    from ansreview.review import Reviewer
+
+    class Stall(_Slow):
+        def do_POST(self):
+            req = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            files = [l for l in req["messages"][-1]["content"].splitlines()
+                     if l.startswith("===== FILE")]
+            _Slow.calls.append((files, ""))
+            self.send_response(200)
+            self.end_headers()
+            if len(files) > 1:
+                time.sleep(3)
+                return
+            body = json.dumps({"summary": "ok", "findings": []})
+            self.wfile.write(json.dumps({"message": {"content": body}, "done": True}).encode())
+
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), Stall)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    url = f"http://127.0.0.1:{srv.server_address[1]}"
+    try:
+        for n in range(4):
+            (tmp_path / f"f{n}.yml").write_text("- hosts: all\n" * 50)
+        unit = Unit(kind="playbook", name="x", files=[f"f{n}.yml" for n in range(4)])
+        cfg = Config(max_chars_per_unit=24000)
+        Reviewer(tmp_path, cfg, OllamaClient(url, "m", timeout=1)).review([unit], [])
+        assert sorted(len(f) for f, _ in _Slow.calls).count(1) == 4
+
+        _Slow.calls = []
+        r = Reviewer(tmp_path, cfg, OllamaClient(url, "m", timeout=1))
+        r.review([unit], [])
+        assert all(len(f) == 1 for f, _ in _Slow.calls) is True and not r.errors
+        assert len(_Slow.calls) == 0       # answers + known timeouts both cached
+    finally:
+        srv.shutdown()
+
+
+def test_doctor_speed_check(capsys):
+    import mock_ollama
+    from ansreview.cli import main
+    srv, url = mock_ollama.start()
+    try:
+        main(["doctor", str(Path(__file__).parent.parent / "examples" / "sample-repo"),
+              "--host", url])
+    finally:
+        srv.shutdown()
+    out = capsys.readouterr().out
+    assert "tok/s" in out and "fully on the GPU" in out

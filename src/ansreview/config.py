@@ -31,7 +31,7 @@ class Config:
     keep_alive: str = "30m"           # keep the model loaded between requests
     retries: int = 2
     workers: int = 1                  # parallel LLM requests (1 = one GPU)
-    max_chars_per_unit: int = 40000   # split a unit when its source exceeds this
+    max_chars_per_unit: int = 24000   # split a unit when its source exceeds this
     max_file_chars: int = 20000       # truncate single huge files
     use_llm: bool = True
     use_lint: bool = True

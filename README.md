@@ -115,7 +115,7 @@ built-in defaults, `~/.ansreview.yml`, the repo's `.ansreview.yml`, environment 
 | `deadline` | `0` | max seconds per request (`0` = 2 × `timeout`) |
 | `num_predict` | `4096` | cap on generated tokens; stops a model stuck repeating JSON |
 | `keep_alive` | `30m` | keeps the model loaded between requests |
-| `max_chars_per_unit` | `40000` | larger roles are split into several requests |
+| `max_chars_per_unit` | `24000` | larger roles are split into several requests |
 | `fail_on` / `min_severity` | `high` / `info` | `info` `low` `medium` `high` `critical` |
 | `min_confidence` | `0.5` | drop LLM findings the model is unsure about |
 | `lint_profile` | – | e.g. `production` |
@@ -149,6 +149,25 @@ Run `ansreview rules` for the list. Highlights:
 | AR014 / AR016 | Credentials in URLs, private keys committed |
 
 LLM findings use the `llm:<rule>` prefix and carry a confidence score.
+
+## Speed
+
+A local model will never match a cloud service, but most slow runs come from a misconfigured
+server rather than from the GPU itself. In order of impact:
+
+1. **Run `ansreview doctor`.** It measures prompt and generation speed and estimates how long
+   one fix batch and one scan chunk take. It also flags the two big problems:
+   - part of the model running on the CPU (often 5–10× slower);
+   - the model reloading between requests because another app on the same server uses a
+     different model or `num_ctx`.
+2. **Tune the server.** Run `sudo scripts/tune-ollama-server.sh --parallel 2` on the Ollama
+   host. It turns on flash attention, a q8 KV cache, parallel slots and keep-alive. Then run
+   ansreview with `--workers 2`, or set it in `~/.ansreview.yml`.
+3. **Re-runs are cheap.** Model answers are cached in `.ansreview/scan-cache.json` and
+   `fix-cache.json`, so only changed files go back to the model. Requests that timed out are
+   remembered too and are split straight away next time.
+4. **Use a smaller model for `fix`.** `ansreview fix --model qwen2.5-coder:7b` is about twice
+   as fast. Fixes are small and every edit is verified anyway.
 
 ## Tips
 

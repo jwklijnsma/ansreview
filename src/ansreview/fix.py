@@ -18,10 +18,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 import difflib
-import hashlib
-import json
 import os
-import threading
 from pathlib import Path
 import re
 import shutil
@@ -31,6 +28,7 @@ import tempfile
 
 import yaml
 
+from .cache import JsonCache
 from .config import Config
 from .discover import discover
 from .models import Finding, Severity
@@ -335,39 +333,21 @@ class Fixer:
             self._save_cache()
 
     # -- cache: re-runs skip files whose content + findings + model are unchanged
-    def _cache_path(self) -> Path:
-        return self.root / ".ansreview" / "fix-cache.json"
-
     def _load_cache(self):
-        self._cache_lock = threading.Lock()
-        self._cache = {}
-        if not self.use_cache:
-            return
-        try:
-            self._cache = json.loads(self._cache_path().read_text())
-        except (OSError, ValueError):
-            self._cache = {}
+        self._cache = JsonCache(self.root / ".ansreview" / "fix-cache.json"
+                                if self.use_cache else None)
 
     def _save_cache(self):
-        if not self.use_cache or not getattr(self, "_cache", None):
-            return
-        try:
-            self._cache_path().parent.mkdir(exist_ok=True)
-            self._cache_path().write_text(json.dumps(self._cache))
-        except OSError:
-            pass
+        if getattr(self, "_cache", None):
+            self._cache.save()
 
     def _cache_key(self, rel: str, content: str, batch: list[Finding]) -> str:
-        h = hashlib.sha256()
-        for part in (self.client.model, FIX_SYSTEM, self.cfg.language, rel, content,
-                     *(f"{f.line}|{f.rule}|{f.message}|{f.suggestion}" for f in batch)):
-            h.update(part.encode("utf-8", "surrogateescape") + b"\0")
-        return h.hexdigest()
+        return JsonCache.key(self.client.model, FIX_SYSTEM, self.cfg.language, rel, content,
+                             *(f"{f.line}|{f.rule}|{f.message}|{f.suggestion}" for f in batch))
 
     def _ask(self, rel: str, content: str, batch: list[Finding]) -> dict:
         key = self._cache_key(rel, content, batch)
-        with self._cache_lock:
-            hit = self._cache.get(key)
+        hit = self._cache.get(key)
         if hit is not None:
             # a batch that timed out before goes straight to splitting, unless the timeout grew
             if "__timeout__" in hit:
@@ -387,11 +367,9 @@ class Fixer:
         try:
             data = self.client.chat_json(FIX_SYSTEM, user, FIX_SCHEMA)
         except OllamaTimeout:
-            with self._cache_lock:
-                self._cache[key] = {"__timeout__": self.client.timeout}
+            self._cache.put(key, {"__timeout__": self.client.timeout})
             raise
-        with self._cache_lock:
-            self._cache[key] = data
+        self._cache.put(key, data)
         return data
 
     def _batches(self, rel: str, content: str, batch: list[Finding]):

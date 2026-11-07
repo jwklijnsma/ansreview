@@ -15,6 +15,9 @@ class _Handler(BaseHTTPRequestHandler):
         pass
 
     def _send(self, code: int, body: dict):
+        if "message" in body:
+            body = {**body, "done": True, "done_reason": "stop", "load_duration": 1_000_000,
+                    "prompt_eval_duration": 1_000_000_000, "eval_duration": 1_000_000_000}
         data = json.dumps(body).encode()
         self.send_response(code)
         self.send_header("Content-Type", "application/json")
@@ -25,6 +28,9 @@ class _Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/api/version":
             self._send(200, {"version": "0.12.0-mock"})
+        elif self.path == "/api/ps":
+            self._send(200, {"models": [{"name": "qwen2.5-coder:14b", "size": 10 * 2**30,
+                                         "size_vram": 10 * 2**30, "context_length": 16384}]})
         elif self.path == "/api/tags":
             self._send(200, {"models": [{"name": "qwen2.5-coder:14b"}]})
         else:

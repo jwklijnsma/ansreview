@@ -6,9 +6,10 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 import re
 
+from .cache import JsonCache
 from .config import Config
 from .models import Finding, Severity, Unit
-from .ollama import OllamaClient, OllamaError
+from .ollama import OllamaClient, OllamaError, OllamaTimeout
 
 FINDING_SCHEMA = {
     "type": "object",
@@ -78,7 +79,8 @@ def _numbered(text: str) -> str:
     return "\n".join(f"{i:>{width}} | {line}" for i, line in enumerate(lines, 1))
 
 
-def build_chunks(root: Path, unit: Unit, cfg: Config) -> list[tuple[list[str], str]]:
+def build_chunks(root: Path, unit: Unit, cfg: Config, max_chars: int | None = None,
+                 only: list[str] | None = None) -> list[tuple[list[str], str]]:
     """Split a unit into prompt-sized chunks: [(files, rendered_source)]."""
     # Review order inside a role: things that explain the rest come first.
     order = {"defaults": 0, "vars": 1, "meta": 2, "tasks": 3, "handlers": 4, "templates": 5}
@@ -90,17 +92,18 @@ def build_chunks(root: Path, unit: Unit, cfg: Config) -> list[tuple[list[str], s
     chunks: list[tuple[list[str], str]] = []
     cur_files: list[str] = []
     cur_text = ""
-    for rel in sorted(unit.files, key=key):
+    limit = max_chars or cfg.max_chars_per_unit
+    for rel in sorted(only if only is not None else unit.files, key=key):
         try:
             text = (root / rel).read_text(errors="replace")
         except OSError:
             continue
         if not text.strip():
             continue
-        if len(text) > cfg.max_file_chars:
-            text = text[: cfg.max_file_chars] + "\n# ... [truncated by ansreview]"
+        if len(text) > min(cfg.max_file_chars, limit):
+            text = text[: min(cfg.max_file_chars, limit)] + "\n# ... [truncated by ansreview]"
         block = f"===== FILE: {rel} =====\n{_numbered(text)}\n\n"
-        if cur_text and len(cur_text) + len(block) > cfg.max_chars_per_unit:
+        if cur_text and len(cur_text) + len(block) > limit:
             chunks.append((cur_files, cur_text))
             cur_files, cur_text = [], ""
         cur_files.append(rel)
@@ -129,13 +132,15 @@ def _line_count(root: Path, rel: str) -> int:
 
 
 class Reviewer:
-    def __init__(self, root: Path, cfg: Config, client: OllamaClient, progress=None):
+    def __init__(self, root: Path, cfg: Config, client: OllamaClient, progress=None,
+                 use_cache: bool = True):
         self.root = root
         self.cfg = cfg
         self.client = client
         self.progress = progress or (lambda msg: None)
         self.errors: list[str] = []
         self.summaries: dict[str, str] = {}
+        self.cache = JsonCache(root / ".ansreview" / "scan-cache.json" if use_cache else None)
 
     def _review_chunk(self, unit: Unit, idx: int, total: int, files: list[str], source: str,
                       prior: list[Finding]) -> list[Finding]:
@@ -149,7 +154,19 @@ class Reviewer:
             + f"\nAlready reported by linters (do not repeat):\n{_prior_summary(prior, files)}\n\n"
             + "Source:\n" + source
         )
-        data = self.client.chat_json(SYSTEM_PROMPT, user, FINDING_SCHEMA)
+        key = JsonCache.key(self.client.model, SYSTEM_PROMPT, user)
+        data = self.cache.get(key)
+        if data is not None and "__timeout__" in data:
+            if self.client.timeout <= data["__timeout__"]:
+                raise OllamaTimeout("timed out on a previous run (cached)")
+            data = None
+        if data is None:
+            try:
+                data = self.client.chat_json(SYSTEM_PROMPT, user, FINDING_SCHEMA)
+            except OllamaTimeout:
+                self.cache.put(key, {"__timeout__": self.client.timeout})
+                raise
+            self.cache.put(key, data)
         summary = str(data.get("summary", "")).strip()
         if summary:
             self.summaries[label] = summary
@@ -193,18 +210,40 @@ class Reviewer:
         self.progress(f"  ✓ {label}: {len(out)} finding(s)")
         return out
 
+    def _review_split(self, unit: Unit, idx: int, total: int, files: list[str], source: str,
+                      prior: list[Finding], limit: int) -> list[Finding]:
+        """Review a chunk; when the model times out, halve the chunk and review the parts."""
+        try:
+            return self._review_chunk(unit, idx, total, files, source, prior)
+        except OllamaTimeout as exc:
+            half = limit // 2
+            if half < 2000:
+                raise
+            if len(files) > 1:
+                parts = [files[: len(files) // 2], files[len(files) // 2:]]
+            else:
+                parts = [files]          # one big file: retry with a shorter excerpt
+            self.progress(f"  … {unit.kind} {unit.name}: timed out, splitting ({exc})")
+            out = []
+            for part in parts:
+                for files2, source2 in build_chunks(self.root, unit, self.cfg, half, part):
+                    out += self._review_split(unit, idx, total, files2, source2, prior, half)
+            return out
+
     def review(self, units: list[Unit], prior: list[Finding]) -> list[Finding]:
         jobs = []
         for unit in units:
             chunks = build_chunks(self.root, unit, self.cfg)
             for i, (files, source) in enumerate(chunks, 1):
                 jobs.append((unit, i, len(chunks), files, source))
+        jobs.sort(key=lambda j: -len(j[4]))
         self.progress(f"LLM review: {len(jobs)} request(s) to {self.client.model} "
                       f"@ {self.client.host}")
 
         findings: list[Finding] = []
         with ThreadPoolExecutor(max_workers=max(1, int(self.cfg.workers))) as pool:
-            futs = {pool.submit(self._review_chunk, *job, prior): job for job in jobs}
+            futs = {pool.submit(self._review_split, *job, prior,
+                                int(self.cfg.max_chars_per_unit)): job for job in jobs}
             for fut in as_completed(futs):
                 unit = futs[fut][0]
                 try:
@@ -215,6 +254,7 @@ class Reviewer:
                 except Exception as exc:  # malformed model output etc.
                     self.errors.append(f"{unit.kind} {unit.name}: {type(exc).__name__}: {exc}")
                     self.progress(f"  ✗ {unit.kind} {unit.name}: {exc}")
+        self.cache.save()
         return dedupe_llm(findings, prior)
 
 

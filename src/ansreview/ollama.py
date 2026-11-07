@@ -44,6 +44,7 @@ class OllamaClient:
         self._schema_supported = True
         self.tokens_in = 0
         self.tokens_out = 0
+        self.last_stats: dict = {}
 
     # -- health ----------------------------------------------------------------
     def version(self) -> str:
@@ -60,6 +61,12 @@ class OllamaClient:
         names = self.models()
         want = self.model if ":" in self.model else self.model + ":latest"
         return want in names or self.model in names
+
+    def running(self) -> list[dict]:
+        """Models loaded on the server right now (/api/ps)."""
+        r = self.session.get(f"{self.host}/api/ps", timeout=15)
+        r.raise_for_status()
+        return r.json().get("models", [])
 
     # -- chat ------------------------------------------------------------------
     def _stream(self, payload: dict) -> str:
@@ -81,6 +88,9 @@ class OllamaClient:
                     raise OllamaError(f"Ollama: {data['error']}")
                 parts.append((data.get("message") or {}).get("content", ""))
                 if data.get("done"):
+                    self.last_stats = {k: data.get(k) for k in (
+                        "prompt_eval_count", "prompt_eval_duration", "eval_count",
+                        "eval_duration", "load_duration", "total_duration")}
                     self.tokens_in += data.get("prompt_eval_count", 0) or 0
                     self.tokens_out += data.get("eval_count", 0) or 0
                     if data.get("done_reason") == "length":
