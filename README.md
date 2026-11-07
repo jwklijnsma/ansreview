@@ -91,7 +91,8 @@ tree but **never committed**. Review them with `git diff` and undo with `git che
 
 Vaulting a secret does not remove it from git history, so **rotate it**.
 
-**Speed.** Model fixes are sent in batches of `fix_batch_size` findings (default 4). Files longer
+**Speed.** Each file gets one model request with all of its findings (set `fix_batch_size`
+to cap that). Files longer
 than `fix_full_file_lines` are sent as excerpts around each finding, not as a whole, which cuts
 prompt time on big playbooks. Responses are streamed, so `timeout` is the longest the model may
 stay silent, not the total time. A batch that times out is split in half and tried again; it is
@@ -115,13 +116,14 @@ built-in defaults, `~/.ansreview.yml`, the repo's `.ansreview.yml`, environment 
 | `deadline` | `0` | max seconds per request (`0` = 2 × `timeout`) |
 | `num_predict` | `4096` | cap on generated tokens; stops a model stuck repeating JSON |
 | `keep_alive` | `30m` | keeps the model loaded between requests |
+| `per_file` | `true` | one model request per file |
 | `max_chars_per_unit` | `24000` | larger roles are split into several requests |
 | `fail_on` / `min_severity` | `high` / `info` | `info` `low` `medium` `high` `critical` |
 | `min_confidence` | `0.5` | drop LLM findings the model is unsure about |
 | `lint_profile` | – | e.g. `production` |
 | `lint_offline` | `true` | `false` lets ansible-lint install `requirements.yml` collections |
 | `fix_min_severity` / `fix_min_confidence` | `medium` / `0.8` | which model findings `fix` may touch |
-| `fix_batch_size` | `4` | findings per model request in `fix` (`--batch-size`) |
+| `fix_batch_size` | `0` | findings per request in `fix`; `0` = all of a file at once (`--batch-size`) |
 | `fix_context_lines` / `fix_full_file_lines` | `25` / `120` | excerpt size for long files in `fix` |
 | `lint_fix_rules` | `all` | write list for `ansible-lint --fix` |
 | `disabled_rules` | `[]` | AR or ansible-lint rule IDs |
@@ -151,6 +153,12 @@ Run `ansreview rules` for the list. Highlights:
 LLM findings use the `llm:<rule>` prefix and carry a confidence score.
 
 ## Speed
+
+Both `scan` and `fix` send **one request per file** and work through the files in order:
+`[12/65] ✓ roles/docker/tasks/main.yml 41s`. The status of every file (pending, running,
+done, cached, failed) is kept in `.ansreview/queue.json`. To watch a long run from another
+terminal, use `jq '.counts' .ansreview/queue.json`. Set `per_file: false` to send a whole
+role in one request again.
 
 A local model will never match a cloud service, but most slow runs come from a misconfigured
 server rather than from the GPU itself. In order of impact:

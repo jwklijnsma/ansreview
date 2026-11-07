@@ -31,6 +31,7 @@ class Config:
     keep_alive: str = "30m"           # keep the model loaded between requests
     retries: int = 2
     workers: int = 1                  # parallel LLM requests (1 = one GPU)
+    per_file: bool = True             # one model request per file (False: group a role's files)
     max_chars_per_unit: int = 24000   # split a unit when its source exceeds this
     max_file_chars: int = 20000       # truncate single huge files
     use_llm: bool = True
@@ -48,7 +49,8 @@ class Config:
     ])
     fix_min_severity: str = "medium"  # `fix`: only let the model fix findings at/above this
     fix_min_confidence: float = 0.8   # `fix`: ...and at/above this confidence
-    fix_batch_size: int = 4           # `fix`: findings per LLM request (split further on timeout)
+    fix_batch_size: int = 0           # `fix`: findings per request; 0 = all of a file in one
+                                      # request (split further on timeout)
     fix_context_lines: int = 25       # `fix`: lines of context around each finding
     fix_full_file_lines: int = 120    # `fix`: send the whole file when it is this short
     lint_fix_rules: str = "all"       # `fix`: ansible-lint --fix write list ("all", "none", rule ids)

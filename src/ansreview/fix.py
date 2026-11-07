@@ -31,6 +31,7 @@ import yaml
 from .cache import JsonCache
 from .config import Config
 from .discover import discover
+from .filequeue import FileQueue
 from .models import Finding, Severity
 from .ollama import OllamaClient, OllamaError, OllamaTimeout
 from .static import LineLoader, WORLD_WRITABLE_RE, run_static
@@ -315,11 +316,26 @@ class Fixer:
         self._load_cache()
         self.say(f"LLM fixes: {len(picked)} finding(s) in {len(by_file)} file(s) "
                  f"with {self.client.model}")
-        # biggest files first so a parallel pool does not end on one long straggler
-        order = sorted(by_file, key=lambda r: -len(by_file[r]))
+        order = sorted(by_file)          # one request per file, in a stable order
+        self._misses: set[str] = set()
+        queue = FileQueue(self.root / ".ansreview" / "queue.json", "fix", order, self.say)
+
+        def run(rel):
+            queue.start(rel)
+            try:
+                fixed = self._fix_file(rel, by_file[rel])
+            except Exception as exc:
+                queue.finish(rel, "failed", f"{type(exc).__name__}: {exc}")
+                raise
+            failed = sum(1 for r in self.run_info.results
+                         if r.file == rel and r.stage == "llm" and r.action == "failed")
+            queue.finish(rel, "failed" if failed and not fixed and failed == len(by_file[rel])
+                         else ("done" if rel in self._misses else "cached"),
+                         f"{fixed}/{len(by_file[rel])} fixed")
+
         try:
             with ThreadPoolExecutor(max_workers=max(1, int(self.cfg.workers))) as pool:
-                futs = {pool.submit(self._fix_file, rel, by_file[rel]): rel for rel in order}
+                futs = {pool.submit(run, rel): rel for rel in order}
                 for fut in as_completed(futs):
                     rel = futs[fut]
                     try:
@@ -355,6 +371,7 @@ class Fixer:
                     raise OllamaTimeout("timed out on a previous run (cached)")
             else:
                 return hit
+        self._misses.add(rel)
         listing = "\n".join(
             f"[{i}] line {f.line or '?'} · {f.severity.label} · {f.rule}: {f.message}"
             + (f" (suggested: {f.suggestion})" if f.suggestion else "")
@@ -391,10 +408,10 @@ class Fixer:
             for f in findings:
                 self.run_info.results.append(FixResult(
                     rel, f.line, f.rule, "llm", "failed", "file too large for an automatic fix"))
-            return
+            return 0
 
         findings = sorted(findings, key=lambda f: f.line or 0)
-        size = max(1, int(self.cfg.fix_batch_size))
+        size = int(self.cfg.fix_batch_size) or len(findings)
         content = original
         results: list[FixResult] = []
         for start in range(0, len(findings), size):
@@ -418,8 +435,7 @@ class Fixer:
         self.run_info.results.extend(results)
         if content != original:
             _write(path, content)
-        fixed = sum(1 for r in results if r.action == "fixed")
-        self.say(f"  ✓ {rel}: {fixed}/{len(findings)} fixed")
+        return sum(1 for r in results if r.action == "fixed")
 
     def _apply_results(self, rel: str, content: str, batch: list[Finding], data: dict,
                        results: list[FixResult]) -> str:

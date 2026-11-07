@@ -140,3 +140,24 @@ def test_doctor_speed_check(capsys):
         srv.shutdown()
     out = capsys.readouterr().out
     assert "tok/s" in out and "fully on the GPU" in out
+
+
+def test_one_request_per_file_and_queue(tmp_path):
+    import shutil
+    import mock_ollama
+    from ansreview.cli import main
+    repo = tmp_path / "repo"
+    shutil.copytree(Path(__file__).parent.parent / "examples" / "sample-repo", repo)
+    srv, url = mock_ollama.start()
+    try:
+        main(["scan", str(repo), "--host", url, "-q", "-f", "json", "--no-lint"])
+    finally:
+        srv.shutdown()
+    prompts = [c["messages"][-1]["content"] for c in mock_ollama._Handler.calls]
+    assert prompts and all(p.count("===== FILE:") == 1 for p in prompts)
+    files = [p.split("===== FILE: ")[1].split(" ")[0] for p in prompts]
+    assert len(files) == len(set(files))                       # each file once
+
+    q = json.loads((repo / ".ansreview" / "queue.json").read_text())
+    assert q["stage"] == "scan" and q["total"] == len(files)
+    assert {f["status"] for f in q["files"]} == {"done"}

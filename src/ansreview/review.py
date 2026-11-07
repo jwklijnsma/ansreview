@@ -8,6 +8,7 @@ import re
 
 from .cache import JsonCache
 from .config import Config
+from .filequeue import FileQueue
 from .models import Finding, Severity, Unit
 from .ollama import OllamaClient, OllamaError, OllamaTimeout
 
@@ -141,10 +142,13 @@ class Reviewer:
         self.errors: list[str] = []
         self.summaries: dict[str, str] = {}
         self.cache = JsonCache(root / ".ansreview" / "scan-cache.json" if use_cache else None)
+        self.queue_path = root / ".ansreview" / "queue.json"
+        self._misses: set[str] = set()     # job keys that needed a real model call
 
     def _review_chunk(self, unit: Unit, idx: int, total: int, files: list[str], source: str,
                       prior: list[Finding]) -> list[Finding]:
-        label = f"{unit.kind} {unit.name}" + (f" (part {idx}/{total})" if total > 1 else "")
+        label = (files[0] if self.cfg.per_file and len(files) == 1 else
+                 f"{unit.kind} {unit.name}" + (f" (part {idx}/{total})" if total > 1 else ""))
         user = (
             f"Review this Ansible {unit.kind}: {unit.name}"
             + (f" (part {idx} of {total})" if total > 1 else "") + "\n\n"
@@ -161,6 +165,7 @@ class Reviewer:
                 raise OllamaTimeout("timed out on a previous run (cached)")
             data = None
         if data is None:
+            self._misses.add(files[0])
             try:
                 data = self.client.chat_json(SYSTEM_PROMPT, user, FINDING_SCHEMA)
             except OllamaTimeout:
@@ -207,7 +212,6 @@ class Reviewer:
                 suggestion=str(item.get("suggestion", "")).strip(),
                 confidence=round(conf, 2),
             ))
-        self.progress(f"  ✓ {label}: {len(out)} finding(s)")
         return out
 
     def _review_split(self, unit: Unit, idx: int, total: int, files: list[str], source: str,
@@ -230,30 +234,64 @@ class Reviewer:
                     out += self._review_split(unit, idx, total, files2, source2, prior, half)
             return out
 
-    def review(self, units: list[Unit], prior: list[Finding]) -> list[Finding]:
+    def _jobs(self, units: list[Unit]) -> list[tuple]:
         jobs = []
+        if self.cfg.per_file:
+            # one request per file, in a stable order; a file shared by units goes once
+            seen: set[str] = set()
+            for unit in units:
+                for rel in sorted(unit.files):
+                    if rel in seen:
+                        continue
+                    chunks = build_chunks(self.root, unit, self.cfg, only=[rel])
+                    if chunks:
+                        seen.add(rel)
+                        jobs.append((unit, 1, 1, *chunks[0]))
+            return jobs
         for unit in units:
             chunks = build_chunks(self.root, unit, self.cfg)
             for i, (files, source) in enumerate(chunks, 1):
                 jobs.append((unit, i, len(chunks), files, source))
         jobs.sort(key=lambda j: -len(j[4]))
-        self.progress(f"LLM review: {len(jobs)} request(s) to {self.client.model} "
+        return jobs
+
+    @staticmethod
+    def _job_key(job) -> str:
+        unit, idx, total, files, _ = job
+        if len(files) == 1:
+            return files[0]
+        return f"{unit.kind} {unit.name}" + (f" (part {idx}/{total})" if total > 1 else "")
+
+    def review(self, units: list[Unit], prior: list[Finding]) -> list[Finding]:
+        jobs = self._jobs(units)
+        what = "file(s), one request each" if self.cfg.per_file else "request(s)"
+        self.progress(f"LLM review: {len(jobs)} {what} to {self.client.model} "
                       f"@ {self.client.host}")
+        queue = FileQueue(self.queue_path, "scan", [self._job_key(j) for j in jobs],
+                          self.progress)
+
+        def run(job):
+            key = self._job_key(job)
+            queue.start(key)
+            try:
+                out = self._review_split(*job, prior, int(self.cfg.max_chars_per_unit))
+            except Exception as exc:
+                queue.finish(key, "failed", f"{type(exc).__name__}: {exc}")
+                raise
+            n = len(out)
+            queue.finish(key, "done" if job[3][0] in self._misses else "cached",
+                         f"{n} finding(s)" if n else "")
+            return out
 
         findings: list[Finding] = []
         with ThreadPoolExecutor(max_workers=max(1, int(self.cfg.workers))) as pool:
-            futs = {pool.submit(self._review_split, *job, prior,
-                                int(self.cfg.max_chars_per_unit)): job for job in jobs}
+            futs = {pool.submit(run, job): job for job in jobs}
             for fut in as_completed(futs):
-                unit = futs[fut][0]
+                key = self._job_key(futs[fut])
                 try:
                     findings.extend(fut.result())
-                except OllamaError as exc:
-                    self.errors.append(f"{unit.kind} {unit.name}: {exc}")
-                    self.progress(f"  ✗ {unit.kind} {unit.name}: {exc}")
-                except Exception as exc:  # malformed model output etc.
-                    self.errors.append(f"{unit.kind} {unit.name}: {type(exc).__name__}: {exc}")
-                    self.progress(f"  ✗ {unit.kind} {unit.name}: {exc}")
+                except Exception as exc:  # OllamaError, malformed model output, ...
+                    self.errors.append(f"{key}: {type(exc).__name__}: {exc}")
         self.cache.save()
         return dedupe_llm(findings, prior)
 
