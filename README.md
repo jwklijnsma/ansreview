@@ -45,6 +45,7 @@ ansreview --model qwen3-coder:30b --lang nl # other model, Dutch report
 ansreview --diff origin/main                # only review what changed (for MRs)
 ansreview --only roles/keycloak             # one role
 ansreview --no-llm                          # just ansible-lint + AR checks (fast)
+ansreview serve --root ~/git                # web UI (see below)
 ansreview -f md,json,sarif,gitlab -o out/   # pick report formats and folder
 ```
 
@@ -98,6 +99,24 @@ prompt time on big playbooks. Responses are streamed, so `timeout` is the longes
 stay silent, not the total time. A batch that times out is split in half and tried again; it is
 never resent unchanged. Answers and timeouts are cached in `.ansreview/fix-cache.json`, so a
 re-run only asks about files that changed. Use `--no-cache` to ask again.
+
+## Web UI
+
+```
+ansreview serve --root ~/git                    # a folder of repos (or one repo)
+ansreview serve --root ~/git/infra --root ~/git/platform --open
+```
+
+It prints a link with an access token (`http://localhost:8765/?token=…`). Open it once; the token becomes a cookie. From the browser you can:
+
+- pick a repository and run a **scan**, with the same options as the CLI (diff mode, only some roles, model override, skip the model, lint profile);
+- watch it live: per-file progress from `queue.json`, the log, and a Cancel button;
+- browse findings by severity, source (AR / ansible-lint / model) or rule, with the suggested fix and the code around each line;
+- **Preview fixes** (`fix --dry-run`) and read the fix report and colour diff, then **Apply fixes**. Nothing is ever committed; review with `git diff` as usual.
+
+Scans and fixes run as `ansreview scan|fix` subprocesses, so they behave exactly like the CLI and write the same `.ansreview/` reports. One job runs at a time, since they share the GPU. No extra dependencies and no CDN: it works on an air-gapped host.
+
+**Security.** By default it listens on `127.0.0.1` only and every API call needs the token (`--token` or `$ANSREVIEW_WEB_TOKEN` to fix it, otherwise a random one per start). Only repositories under the `--root` folders are reachable, and file reads cannot leave a repo. The Ollama host, output folder, config file and vault password file cannot be set from the browser. POSTs need a custom header, so other sites cannot trigger a scan. `--no-auth` is refused unless you bind to localhost. To reach it from another machine, prefer an SSH tunnel (`ssh -L 8765:localhost:8765 gpu-box`). If you do use `--bind 0.0.0.0`, put it behind a TLS reverse proxy, because the token travels in plain HTTP otherwise.
 
 ## Configure
 
