@@ -140,7 +140,7 @@ docker run --rm --add-host=host.docker.internal:host-gateway \
 - `--user "$(id -u):$(id -g)"` makes reports and fixes belong to you, not root. The image also runs under arbitrary UIDs (OpenShift).
 - On Linux, `--add-host=host.docker.internal:host-gateway` is needed to reach Ollama on the host. Ollama must listen on more than 127.0.0.1 (`OLLAMA_HOST=0.0.0.0` in its service). Or set `-e OLLAMA_HOST=http://gpu-box:11434`.
 - Pass settings with `ANSREVIEW_MODEL`, `ANSREVIEW_NUM_CTX` and so on, or mount a config: `-v ~/.ansreview.yml:/home/ansreview/.ansreview.yml:ro`.
-- Tags: `latest` and `main` follow the main branch, `0.2.0`/`0.2` come from `v*` git tags, and `sha-abc1234` pins an exact build.
+- Tags: `latest` and `main` follow the main branch, `0.2.0`/`0.2` come from releases (`make release`), and `sha-abc1234` pins an exact build.
 
 With Ollama on the GPU in the same compose project:
 
@@ -167,6 +167,21 @@ volumes:
 ```
 
 Pull the model once with `docker compose exec ollama ollama pull qwen2.5-coder:14b`.
+
+## Releasing
+
+```bash
+make release                    # 0.2.0 -> 0.2.1
+make release BUMP=minor         # 0.2.0 -> 0.3.0   (or BUMP=major)
+make release VERSION=1.0.0      # an exact version
+make release-dry-run            # show what it would do
+```
+
+`make release` runs from an up-to-date, clean `main`. It runs the tests, bumps `__version__` in `src/ansreview/__init__.py` (the only place the version lives), commits `release: vX.Y.Z`, creates an annotated tag and pushes both in one atomic push. If the push is refused, for example by branch protection, the local commit and tag are undone. It asks before pushing; `YES=1` skips the question and `SKIP_TESTS=1` skips the tests.
+
+The tag starts two workflows:
+- `release` checks that the tag matches `__version__`, runs the tests, and creates a GitHub release with the wheel, the sdist and generated notes;
+- `docker` publishes `ghcr.io/jwklijnsma/ansreview:X.Y.Z` and `:X.Y`.
 
 ## Configure
 
