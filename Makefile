@@ -27,8 +27,12 @@ docker: ## build the Docker image locally (ansreview:dev)
 version: ## print the current version
 	@sed -n 's/^__version__ = "\(.*\)"$$/\1/p' src/ansreview/__init__.py
 
-release: ## bump the version (BUMP=patch|minor|major or VERSION=X.Y.Z), tag and push
-	@PYTHON=$(PYTHON) scripts/release.sh $(or $(VERSION),$(BUMP))
+release: ## start the release workflow on GitHub (BUMP=patch|minor|major or VERSION=X.Y.Z)
+	@command -v gh >/dev/null || { echo "make release needs the GitHub CLI: https://cli.github.com"; exit 1; }
+	gh workflow run release.yml --ref main -f bump=$(BUMP) $(if $(VERSION),-f version=$(VERSION)) $(if $(DRY_RUN),-f dry_run=true)
+	@echo "Started. Following the run (Ctrl-C stops watching, not the release)…"
+	@sleep 5
+	@gh run watch --exit-status "$$(gh run list --workflow=release.yml --limit 1 --json databaseId --jq '.[0].databaseId')"
 
 release-patch: ## release X.Y.Z+1
 	@$(MAKE) --no-print-directory release BUMP=patch
@@ -39,5 +43,5 @@ release-minor: ## release X.Y+1.0
 release-major: ## release X+1.0.0
 	@$(MAKE) --no-print-directory release BUMP=major
 
-release-dry-run: ## show what `make release` would do, change nothing
-	@DRY_RUN=1 PYTHON=$(PYTHON) scripts/release.sh $(or $(VERSION),$(BUMP))
+release-dry-run: ## rehearse the release on GitHub: test and build everything, publish nothing
+	@$(MAKE) --no-print-directory release DRY_RUN=1

@@ -25,7 +25,7 @@ Requires Python 3.10+. ansible-lint is optional but recommended.
 ### macOS (one command)
 
 ```bash
-git clone https://github.com/jwklijnsma/-Ansreview.git && cd -- -Ansreview
+git clone https://github.com/jwklijnsma/ansreview.git && cd ansreview
 ./scripts/install-macos.sh --host http://<ollama-host>:11434
 ```
 
@@ -170,18 +170,22 @@ Pull the model once with `docker compose exec ollama ollama pull qwen2.5-coder:1
 
 ## Releasing
 
+Releases run on GitHub. In the repository: **Actions → release → Run workflow**, pick `patch`, `minor` or `major` (or type an exact version), and start it. Or from a terminal with the [GitHub CLI](https://cli.github.com):
+
 ```bash
-make release                    # 0.2.0 -> 0.2.1
+make release                    # 0.2.0 -> 0.2.1, then follows the run
 make release BUMP=minor         # 0.2.0 -> 0.3.0   (or BUMP=major)
 make release VERSION=1.0.0      # an exact version
-make release-dry-run            # show what it would do
+make release-dry-run            # rehearse: test and build everything, publish nothing
 ```
 
-`make release` runs from an up-to-date, clean `main`. It runs the tests, bumps `__version__` in `src/ansreview/__init__.py` (the only place the version lives), commits `release: vX.Y.Z`, creates an annotated tag and pushes both in one atomic push. If the push is refused, for example by branch protection, the local commit and tag are undone. It asks before pushing; `YES=1` skips the question and `SKIP_TESTS=1` skips the tests.
+The workflow:
+1. checks the new version is higher and not released yet, and runs the tests;
+2. bumps `__version__` in `src/ansreview/__init__.py` (the only place the version lives), commits `release: vX.Y.Z` to `main`, and pushes it together with an annotated `vX.Y.Z` tag;
+3. builds the wheel and sdist and creates the GitHub release with install lines and notes generated from the merged PRs;
+4. builds and smoke-tests the Docker image and publishes `ghcr.io/jwklijnsma/ansreview:X.Y.Z`, `:X.Y` and `:latest`.
 
-The tag starts two workflows:
-- `release` checks that the tag matches `__version__`, runs the tests, and creates a GitHub release with the wheel, the sdist and generated notes;
-- `docker` publishes `ghcr.io/jwklijnsma/ansreview:X.Y.Z` and `:X.Y`.
+A dry run does all of this without the push, the release or the image push, and shows the release notes it would use in the run summary. If you ever push a `vX.Y.Z` tag by hand, it still gets a GitHub release and an image.
 
 ## Configure
 
