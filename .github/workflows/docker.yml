@@ -59,7 +59,7 @@ jobs:
 
       # 1. Build for amd64 only and load it, so the smoke test runs the real image.
       - name: Build test image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           platforms: linux/amd64
@@ -130,7 +130,7 @@ jobs:
 
       # 2. Multi-arch build (amd64 comes from the cache above); pushed except on PRs.
       - name: Build and push
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           platforms: ${{ env.PLATFORMS }}
