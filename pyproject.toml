@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ansreview"
-version = "0.2.0"
+dynamic = ["version"]
 description = "Review Ansible codebases with ansible-lint, static security checks and a local Ollama model"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -19,6 +19,10 @@ dev = ["pytest>=8"]
 
 [project.scripts]
 ansreview = "ansreview.cli:main"
+
+[tool.setuptools.dynamic]
+# Single source of truth: `make release` bumps __version__ only.
+version = { attr = "ansreview.__version__" }
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -1,0 +1,70 @@
+name: release
+
+# `make release` pushes a vX.Y.Z tag; this turns it into a GitHub release with the
+# wheel and sdist. The docker workflow publishes the matching image from the same tag.
+on:
+  push:
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Check the tag matches __version__
+        id: ver
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          version=$(sed -n 's/^__version__ = "\(.*\)"$/\1/p' src/ansreview/__init__.py)
+          echo "tag=$tag version=$version"
+          if [ "v$version" != "$tag" ]; then
+            echo "::error::tag $tag does not match __version__ $version in src/ansreview/__init__.py"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Test
+        run: |
+          pip install -e ".[dev]"
+          pytest -q
+
+      - name: Build wheel and sdist
+        run: |
+          pip install build
+          python -m build
+          ls -l dist
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          VERSION: ${{ steps.ver.outputs.version }}
+          IMAGE: ghcr.io/${{ github.repository_owner }}/ansreview
+        run: |
+          set -euo pipefail
+          prev=$(git describe --tags --abbrev=0 --match 'v*.*.*' "${TAG}^" 2>/dev/null || true)
+          args=(-f tag_name="$TAG")
+          [ -n "$prev" ] && args+=(-f previous_tag_name="$prev")
+          gh api "repos/${GITHUB_REPOSITORY}/releases/generate-notes" "${args[@]}" --jq .body > generated.md
+          {
+            echo "## Install"
+            echo
+            echo '```bash'
+            echo "pip install https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/ansreview-${VERSION}-py3-none-any.whl"
+            echo "docker pull ${IMAGE,,}:${VERSION}"
+            echo '```'
+            echo
+            cat generated.md
+          } > notes.md
+          gh release create "$TAG" dist/* --verify-tag --title "ansreview ${VERSION}" --notes-file notes.md
