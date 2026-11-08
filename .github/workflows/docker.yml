@@ -6,14 +6,29 @@ on:
     tags: ["v*"]
   pull_request:
   workflow_dispatch:
+  # Called by the release workflow: a tag pushed with GITHUB_TOKEN does not start
+  # other workflows, so the release builds its image through this instead.
+  workflow_call:
+    inputs:
+      ref:
+        description: Git ref or commit to build
+        type: string
+        required: true
+      version:
+        description: Release version X.Y.Z, tagged as X.Y.Z and X.Y
+        type: string
+        required: false
+      dry_run:
+        description: Build and test, push nothing
+        type: boolean
+        default: false
 
 concurrency:
-  group: docker-${{ github.ref }}
+  group: docker-${{ inputs.ref || github.ref }}
   # Never cancel a publish half-way; superseded PR runs can go.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
-  # The repository is called "-Ansreview", but an image name may not start with "-".
   IMAGE: ghcr.io/${{ github.repository_owner }}/ansreview
   PLATFORMS: linux/amd64,linux/arm64
 
@@ -25,6 +40,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
       - uses: actions/setup-python@v7
         with:
           python-version: "3.15"
@@ -40,6 +57,14 @@ jobs:
       packages: write
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
+
+      # The commit actually checked out; github.sha is the caller's when this is called.
+      - id: rev
+        run: |
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "short=$(git rev-parse --short=7 HEAD)" >> "$GITHUB_OUTPUT"
 
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v4
@@ -55,7 +80,11 @@ jobs:
             type=ref,event=pr
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
-            type=sha,format=short
+            type=semver,pattern={{version}},value=v${{ inputs.version }},enable=${{ inputs.version != '' }}
+            type=semver,pattern={{major}}.{{minor}},value=v${{ inputs.version }},enable=${{ inputs.version != '' }}
+            type=raw,value=sha-${{ steps.rev.outputs.short }}
+          labels: |
+            org.opencontainers.image.revision=${{ steps.rev.outputs.sha }}
 
       # 1. Build for amd64 only and load it, so the smoke test runs the real image.
       - name: Build test image
@@ -67,7 +96,7 @@ jobs:
           tags: ansreview:test
           build-args: |
             VERSION=${{ steps.meta.outputs.version }}
-            REVISION=${{ github.sha }}
+            REVISION=${{ steps.rev.outputs.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -121,25 +150,25 @@ jobs:
         run: docker logs ansreview 2>&1 || true
 
       - name: Log in to GHCR
-        if: github.event_name != 'pull_request'
+        if: github.event_name != 'pull_request' && !inputs.dry_run
         uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # 2. Multi-arch build (amd64 comes from the cache above); pushed except on PRs.
+      # 2. Multi-arch build (amd64 comes from the cache above); pushed except on PRs and dry runs.
       - name: Build and push
         uses: docker/build-push-action@v7
         with:
           context: .
           platforms: ${{ env.PLATFORMS }}
-          push: ${{ github.event_name != 'pull_request' }}
+          push: ${{ github.event_name != 'pull_request' && !inputs.dry_run }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
             VERSION=${{ steps.meta.outputs.version }}
-            REVISION=${{ github.sha }}
+            REVISION=${{ steps.rev.outputs.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
           provenance: mode=max
@@ -149,7 +178,7 @@ jobs:
         if: github.event_name != 'pull_request'
         run: |
           {
-            echo "### Published"
+            if [ "${{ inputs.dry_run }}" = true ]; then echo "### Dry run: built, not pushed"; else echo "### Published"; fi
             echo '```'
             echo "${{ steps.meta.outputs.tags }}"
             echo '```'

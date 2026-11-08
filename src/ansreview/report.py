@@ -121,7 +121,7 @@ def to_sarif(res: ScanResult) -> str:
     return json.dumps({
         "$schema": "https://json.schemastore.org/sarif-2.1.0.json", "version": "2.1.0",
         "runs": [{"tool": {"driver": {"name": "ansreview", "version": __version__,
-                                      "informationUri": "https://github.com/jwklijnsma/-Ansreview",
+                                      "informationUri": "https://github.com/jwklijnsma/ansreview",
                                       "rules": list(rules.values())}},
                   "results": results}],
     }, indent=2, ensure_ascii=False)

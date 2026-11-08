@@ -16,7 +16,7 @@
 
 set -euo pipefail
 
-REPO_URL="git+https://github.com/jwklijnsma/-Ansreview.git"
+REPO_URL="git+https://github.com/jwklijnsma/ansreview.git"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 VENV_DIR="${ANSREVIEW_VENV:-$HOME/.local/share/ansreview/venv}"

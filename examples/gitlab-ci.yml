@@ -9,7 +9,7 @@ ansreview:
     GIT_DEPTH: "0"            # diff mode needs history
   before_script:
     - apt-get update -qq && apt-get install -y -qq git >/dev/null
-    - pip install -q "ansreview[lint] @ git+https://github.com/jwklijnsma/-Ansreview.git"
+    - pip install -q "ansreview[lint] @ git+https://github.com/jwklijnsma/ansreview.git"
     - '[ -f requirements.yml ] && ansible-galaxy collection install -r requirements.yml || true'
   script:
     - |
