@@ -677,9 +677,12 @@ def serve(roots: list[Path], bind: str = "127.0.0.1", port: int = 8765,
     except OSError as exc:
         print(f"error: cannot listen on {bind}:{port}: {exc}", file=sys.stderr)
         return 2
+    in_container = os.environ.get("ANSREVIEW_CONTAINER") == "1"
     shown = "localhost" if bind in ("127.0.0.1", "::1", "localhost") else bind
     if bind in ("0.0.0.0", "::"):
-        shown = "<this-host>"
+        # In the Docker image 0.0.0.0 is only the container side; the user reaches it
+        # through the port they published, normally on localhost.
+        shown = "localhost" if in_container else "<this-host>"
     host_part = f"[{shown}]" if ":" in shown else shown
     url = f"http://{host_part}:{srv.server_address[1]}/"
     if token and not no_auth:
@@ -690,7 +693,10 @@ def serve(roots: list[Path], bind: str = "127.0.0.1", port: int = 8765,
         print(f"  root: {r}", file=sys.stderr)
     print(f"  {len(repos)} repositor{'y' if len(repos) == 1 else 'ies'} found", file=sys.stderr)
     print(f"  open: {url}", file=sys.stderr)
-    if not is_loopback(bind):
+    if in_container:
+        print("  (inside the container; use the host port you published, and publish it "
+              "on 127.0.0.1 unless a TLS proxy sits in front)", file=sys.stderr)
+    elif not is_loopback(bind):
         print("  warning: listening on a non-local address over plain HTTP; put it behind "
               "a TLS reverse proxy or an SSH tunnel", file=sys.stderr)
     if open_browser:

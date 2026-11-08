@@ -118,6 +118,56 @@ Scans and fixes run as `ansreview scan|fix` subprocesses, so they behave exactly
 
 **Security.** By default it listens on `127.0.0.1` only and every API call needs the token (`--token` or `$ANSREVIEW_WEB_TOKEN` to fix it, otherwise a random one per start). Only repositories under the `--root` folders are reachable, and file reads cannot leave a repo. The Ollama host, output folder, config file and vault password file cannot be set from the browser. POSTs need a custom header, so other sites cannot trigger a scan. `--no-auth` is refused unless you bind to localhost. To reach it from another machine, prefer an SSH tunnel (`ssh -L 8765:localhost:8765 gpu-box`). If you do use `--bind 0.0.0.0`, put it behind a TLS reverse proxy, because the token travels in plain HTTP otherwise.
 
+## Docker
+
+Every push to `main` publishes `ghcr.io/jwklijnsma/ansreview` (amd64 + arm64) with ansible-lint included. Ollama is not in the image; by default it talks to Ollama on the Docker host.
+
+```bash
+# Web UI for every repo under ~/git
+docker run -d --name ansreview -p 127.0.0.1:8765:8765 \
+  --add-host=host.docker.internal:host-gateway \
+  --user "$(id -u):$(id -g)" -v ~/git:/repos \
+  -e ANSREVIEW_WEB_TOKEN=change-me \
+  ghcr.io/jwklijnsma/ansreview
+# then open http://localhost:8765/?token=change-me
+
+# One-off scan of the current directory (CI, pre-merge checks)
+docker run --rm --add-host=host.docker.internal:host-gateway \
+  --user "$(id -u):$(id -g)" -v "$PWD:/repos/work" \
+  ghcr.io/jwklijnsma/ansreview scan /repos/work
+```
+
+- `--user "$(id -u):$(id -g)"` makes reports and fixes belong to you, not root. The image also runs under arbitrary UIDs (OpenShift).
+- On Linux, `--add-host=host.docker.internal:host-gateway` is needed to reach Ollama on the host. Ollama must listen on more than 127.0.0.1 (`OLLAMA_HOST=0.0.0.0` in its service). Or set `-e OLLAMA_HOST=http://gpu-box:11434`.
+- Pass settings with `ANSREVIEW_MODEL`, `ANSREVIEW_NUM_CTX` and so on, or mount a config: `-v ~/.ansreview.yml:/home/ansreview/.ansreview.yml:ro`.
+- Tags: `latest` and `main` follow the main branch, `0.2.0`/`0.2` come from `v*` git tags, and `sha-abc1234` pins an exact build.
+
+With Ollama on the GPU in the same compose project:
+
+```yaml
+services:
+  ollama:
+    image: ollama/ollama
+    volumes: [ollama:/root/.ollama]
+    deploy:
+      resources:
+        reservations:
+          devices: [{ driver: nvidia, count: all, capabilities: [gpu] }]
+  ansreview:
+    image: ghcr.io/jwklijnsma/ansreview
+    user: "1000:1000"            # your uid:gid
+    ports: ["127.0.0.1:8765:8765"]
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+      ANSREVIEW_WEB_TOKEN: change-me
+    volumes: [~/git:/repos]
+    depends_on: [ollama]
+volumes:
+  ollama:
+```
+
+Pull the model once with `docker compose exec ollama ollama pull qwen2.5-coder:14b`.
+
 ## Configure
 
 `ansreview init` writes a sample `.ansreview.yml`. Settings are read in this order, later wins:
