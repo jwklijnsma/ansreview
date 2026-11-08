@@ -398,6 +398,13 @@ def cmd_fix(a: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def cmd_serve(a: argparse.Namespace) -> int:
+    from .web import serve
+    roots = [Path(r) for r in (a.root or ["."])]
+    return serve(roots, bind=a.bind, port=a.port, token=a.token, no_auth=a.no_auth,
+                 open_browser=a.open, verbose=a.verbose)
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="ansreview",
@@ -484,13 +491,26 @@ def build_parser() -> argparse.ArgumentParser:
     i.add_argument("path", nargs="?", default=".")
     i.add_argument("--force", action="store_true")
     i.set_defaults(func=cmd_init)
+
+    w = sub.add_parser("serve", help="start the web UI")
+    w.add_argument("--root", action="append", metavar="DIR",
+                   help="a repo, or a folder of repos, the UI may scan (repeatable; default .)")
+    w.add_argument("--bind", default="127.0.0.1",
+                   help="address to listen on (default 127.0.0.1; 0.0.0.0 for all)")
+    w.add_argument("--port", type=int, default=8765, help="port (default 8765)")
+    w.add_argument("--token", help="access token (default: $ANSREVIEW_WEB_TOKEN or a random one)")
+    w.add_argument("--no-auth", action="store_true",
+                   help="no access token (only allowed with a localhost --bind)")
+    w.add_argument("--open", action="store_true", help="open the UI in a browser")
+    w.add_argument("-v", "--verbose", action="store_true", help="log every request")
+    w.set_defaults(func=cmd_serve)
     return p
 
 
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
-    if not argv or (argv[0] not in {"scan", "fix", "doctor", "rules", "init", "-h", "--help",
-                                    "--version"}):
+    if not argv or (argv[0] not in {"scan", "fix", "doctor", "rules", "init", "serve",
+                                    "-h", "--help", "--version"}):
         argv.insert(0, "scan")
     args = build_parser().parse_args(argv)
     try:
