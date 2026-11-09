@@ -111,6 +111,7 @@ It prints a link with an access token (`http://localhost:8765/?token=…`). Open
 
 - pick a repository and run a **scan**, with the same options as the CLI (diff mode, only some roles, model override, skip the model, lint profile);
 - let it run in the **background**: scans and fixes go into a queue on the server and keep running when you close the page. The **Jobs** button in the top bar shows what is running, what is waiting (with its place in the queue) and what finished, with progress, the log, Cancel/Remove, and download buttons;
+- pick the **model** in the top bar: a list of the models your Ollama has (or type one). It applies to every new scan and fix, survives restarts (saved in `~/.cache/ansreview/settings.json`, in the data volume for the container), and a model set in a repo's Options still wins for that repo;
 - browse findings by severity, source (AR / ansible-lint / model) or rule, with the suggested fix and the code around each line;
 - **Preview fixes** (`fix --dry-run`) and read the fix report and colour diff, then **Apply fixes**. Nothing is ever committed; review with `git diff` as usual.
 - **Upload a ZIP** of an Ansible repo (button or drag and drop). It is unpacked and its scan is queued straight away. **Fix & download** fixes it in the background; when it is done you get a notification with the fixed ZIP. A GitHub "Download ZIP" works as-is.

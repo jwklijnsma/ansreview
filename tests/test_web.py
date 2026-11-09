@@ -320,3 +320,66 @@ def test_placeholder_token_refused(repos, capsys, monkeypatch):
     monkeypatch.setenv("ANSREVIEW_WEB_TOKEN", "change-me")
     assert serve([repos], port=0, no_upload=True) == 2
     assert "example value" in capsys.readouterr().err
+
+
+def test_model_picked_in_the_ui(repos, ollama, tmp_path):
+    state = tmp_path / "state"
+    app = WebApp([repos], TOKEN, state_dir=state)
+    srv, base = start(app)
+    try:
+        st = requests.get(f"{base}/api/status", headers=AUTH).json()
+        default = st["model"]
+        assert st["model_source"] == "config" and st["default_model"] == default
+        r = requests.post(f"{base}/api/settings", json={"model": "qwen3-coder:30b"}, headers=POST)
+        assert r.status_code == 200 and r.json() == {"model": "qwen3-coder:30b", "model_source": "ui", "persisted": True}
+        st = requests.get(f"{base}/api/status", headers=AUTH).json()
+        assert st["model"] == "qwen3-coder:30b" and st["model_source"] == "ui"
+        assert requests.get(f"{base}/api/repos/0:infra", headers=AUTH).json()["config"]["model"] == "qwen3-coder:30b"
+        # jobs get it, unless the repo's options name another model
+        job = app.start_job("0:infra", "scan", {"no_llm": True})
+        assert "--model=qwen3-coder:30b" in job.argv
+        job2 = app.start_job("0:infra", "scan", {"no_llm": True, "model": "llama3.1:8b"})
+        assert "--model=llama3.1:8b" in job2.argv and "--model=qwen3-coder:30b" not in job2.argv
+        # validated, and needs the CSRF header like every POST
+        assert requests.post(f"{base}/api/settings", json={"model": "--host=http://evil"}, headers=POST).status_code == 400
+        assert requests.post(f"{base}/api/settings", json={"model": "x"}, headers=AUTH).status_code == 403
+    finally:
+        for j in list(app.jobs.values()):
+            app.cancel_job(j.id)
+        srv.shutdown()
+    # survives a restart
+    again = WebApp([repos], TOKEN, state_dir=state)
+    assert again.effective_model() == "qwen3-coder:30b"
+    # empty = back to the configured default
+    assert again.set_model("")["model_source"] == "config"
+    assert WebApp([repos], TOKEN, state_dir=state).effective_model() == default
+
+
+def test_broken_settings_file_is_ignored(repos, ollama, tmp_path):
+    (tmp_path / "settings.json").write_text("{not json")
+    assert WebApp([repos], TOKEN, state_dir=tmp_path).settings == {}
+    (tmp_path / "settings.json").write_text('{"model": "bad name; rm -rf /"}')
+    assert WebApp([repos], TOKEN, state_dir=tmp_path).settings == {}
+
+
+def test_cancel_just_before_the_process_starts(repos, ollama, tmp_path, monkeypatch):
+    """Cancel between "running" and the subprocess existing used to be lost."""
+    import subprocess as sp
+    from ansreview.web import server as srvmod
+    fake = tmp_path / "fake-python"
+    fake.write_text(f"#!{sys.executable}\nimport time\ntime.sleep(60)\n")
+    fake.chmod(fake.stat().st_mode | stat.S_IEXEC)
+    app = WebApp([repos], TOKEN, python=str(fake))
+    real_popen = sp.Popen
+
+    def slow_popen(*a, **kw):          # cancel inside the window
+        for j in list(app.jobs.values()):
+            app.cancel_job(j.id)
+        return real_popen(*a, **kw)
+
+    monkeypatch.setattr(srvmod.subprocess, "Popen", slow_popen)
+    job = app.start_job("0:infra", "scan", {})
+    t0 = time.time()
+    while job.active and time.time() - t0 < 15:
+        time.sleep(0.1)
+    assert job.status == "cancelled"

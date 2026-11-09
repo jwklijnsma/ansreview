@@ -97,6 +97,9 @@ export interface Status {
   version: string;
   ollama_host: string;
   model: string;
+  /** "ui" when picked in the web UI, "config" when it comes from the config/env. */
+  model_source: "ui" | "config";
+  default_model: string;
   ollama: string | null;
   ollama_error?: string;
   model_available: boolean | null;

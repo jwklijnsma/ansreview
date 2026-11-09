@@ -110,7 +110,7 @@ function RepoJob({ job }: { job: Job }) {
 }
 
 export function RepoPage({ repoId, tab }: { repoId: string; tab: string }) {
-  const { jobs, repoVersion, startJob, handleError, refreshRepos, toast } = useApp();
+  const { jobs, repoVersion, settingsVersion, startJob, handleError, refreshRepos, toast } = useApp();
   const [detail, setDetail] = useState<RepoDetail | null>(null);
   const [report, setReport] = useState<{ report: Report | null; time: number | null }>({ report: null, time: null });
   const [fix, setFix] = useState<FixResult | null>(null);
@@ -141,7 +141,7 @@ export function RepoPage({ repoId, tab }: { repoId: string; tab: string }) {
   useEffect(() => {
     load();
     clearFileCache();
-  }, [load, version]);
+  }, [load, version, settingsVersion]);
 
   if (error) return <div className="empty"><h3>Could not open this repository</h3><p>{error}</p></div>;
   if (!detail) return <div className="empty"><p>Loading…</p></div>;

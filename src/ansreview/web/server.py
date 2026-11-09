@@ -232,8 +232,11 @@ class WebApp:
     """Everything the HTTP handler needs; kept separate so tests can drive it directly."""
 
     def __init__(self, roots: list[Path], token: str | None, python: str | None = None,
-                 uploads: UploadStore | None = None):
+                 uploads: UploadStore | None = None, state_dir: Path | None = None):
         self.uploads = uploads
+        # Settings chosen in the UI (the model, for now), kept across restarts.
+        self.settings_path = Path(state_dir) / "settings.json" if state_dir else None
+        self.settings: dict = self._load_settings()
         self.roots = [Path(r).expanduser().resolve() for r in roots]
         for r in self.roots:
             if not r.is_dir():
@@ -358,7 +361,7 @@ class WebApp:
         info.update({
             "dirty": None if status is None else bool(status),
             "changed_files": [] if not status else [ln[3:] for ln in status.splitlines()][:50],
-            "config": {"model": cfg.model, "language": cfg.language,
+            "config": {"model": self.settings.get("model") or cfg.model, "language": cfg.language,
                        "fail_on": cfg.fail_on, "min_severity": cfg.min_severity,
                        "lint_profile": cfg.lint_profile, "workers": cfg.workers},
             "config_warnings": warnings,
@@ -465,6 +468,49 @@ class WebApp:
         except (OSError, ValueError):
             return None
 
+    # ---- settings
+    def _load_settings(self) -> dict:
+        if not self.settings_path:
+            return {}
+        try:
+            data = json.loads(self.settings_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+        model = data.get("model") if isinstance(data, dict) else None
+        return {"model": model} if isinstance(model, str) and MODEL_RE.match(model) else {}
+
+    def config_model(self) -> str:
+        cfg, _ = load_config(Path.home())
+        return cfg.model
+
+    def effective_model(self) -> str:
+        """The model jobs use: the one picked in the UI, else the configured default."""
+        return self.settings.get("model") or self.config_model()
+
+    def set_model(self, model: str | None) -> dict:
+        model = (model or "").strip()
+        if model and not MODEL_RE.match(model):
+            raise ApiError(400, "invalid model name")
+        with self.lock:
+            if model:
+                self.settings["model"] = model
+            else:
+                self.settings.pop("model", None)   # back to the configured default
+            if self.settings_path:
+                try:
+                    self.settings_path.parent.mkdir(parents=True, exist_ok=True)
+                    tmp = self.settings_path.with_suffix(".tmp")
+                    tmp.write_text(json.dumps(self.settings), encoding="utf-8")
+                    tmp.replace(self.settings_path)
+                except OSError as exc:
+                    raise ApiError(500, f"could not save the setting: {exc}") from None
+            self._status_cache = None
+        return {"model": self.effective_model(), "model_source": self._model_source(),
+                "persisted": bool(self.settings_path)}
+
+    def _model_source(self) -> str:
+        return "ui" if self.settings.get("model") else "config"
+
     def server_status(self) -> dict:
         now = time.time()
         if self._status_cache and now - self._status_cache[0] < 15:
@@ -472,14 +518,16 @@ class WebApp:
         from .. import lint
         from ..ollama import OllamaClient
         cfg, _ = load_config(Path.home())
-        st = {"version": __version__, "ollama_host": cfg.ollama_host, "model": cfg.model,
+        model = self.settings.get("model") or cfg.model
+        st = {"version": __version__, "ollama_host": cfg.ollama_host, "model": model,
+              "model_source": self._model_source(), "default_model": cfg.model,
               "ollama": None, "model_available": None, "models": [],
               "ansible_lint": lint.version(),
               "roots": [str(r) for r in self.roots], "auth": self.token is not None,
               "uploads": ({"enabled": True, "max_mb": self.uploads.limits.max_upload // 2**20,
                            "keep_days": self.uploads.keep_days}
                           if self.uploads else {"enabled": False})}
-        client = OllamaClient(cfg.ollama_host, cfg.model, api_key=cfg.api_key, timeout=5)
+        client = OllamaClient(cfg.ollama_host, model, api_key=cfg.api_key, timeout=5)
         try:
             st["ollama"] = client.version()
             st["models"] = client.models()[:50]
@@ -497,6 +545,8 @@ class WebApp:
         """Queue a scan or fix. It runs in the background, after the jobs before it."""
         path = self.resolve_repo(repo_id)
         opts = {k: v for k, v in (opts or {}).items() if v not in (None, "", False, [])}
+        if "model" not in opts and self.settings.get("model"):
+            opts["model"] = self.settings["model"]     # the model picked in the UI
         argv = build_argv(action, path, opts)
         with self.cv:
             for j in self.jobs.values():
@@ -554,6 +604,9 @@ class WebApp:
             job.add_line(f"error: could not start: {exc}")
             job.status, job.ended = "failed", time.time()
             return
+        # A Cancel that came in while the process was being started must not get lost.
+        if job.cancel_requested:
+            self._kill(job)
         assert job.proc.stdout is not None
         for line in job.proc.stdout:
             job.add_line(line.rstrip("\n"))
@@ -610,8 +663,14 @@ class WebApp:
                 job.status, job.ended = "cancelled", time.time()
                 job.add_line("cancelled before it started")
                 return job
+        if job.status == "running":
+            job.cancel_requested = True     # also covers the moment before the process exists
+            self._kill(job)
+        return job
+
+    @staticmethod
+    def _kill(job: Job) -> None:
         if job.proc and job.proc.poll() is None:
-            job.cancel_requested = True
             try:
                 if hasattr(os, "killpg"):
                     os.killpg(job.proc.pid, signal.SIGTERM)
@@ -619,7 +678,6 @@ class WebApp:
                     job.proc.terminate()
             except ProcessLookupError:
                 pass
-        return job
 
     def job_list(self) -> list[dict]:
         with self.cv:
@@ -806,6 +864,11 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, {"repos": app.list_repos()})
         if method == "POST" and parts == ["uploads"]:
             return self._upload()
+        if method == "POST" and parts == ["settings"]:
+            body = self._body()
+            if "model" not in body:
+                raise ApiError(400, "nothing to change")
+            return self._json(200, app.set_model(body.get("model")))
         if len(parts) >= 2 and parts[0] == "repos":
             rid = parts[1]
             rest = parts[2:]
@@ -929,8 +992,13 @@ def serve(roots: list[Path], bind: str = "127.0.0.1", port: int = 8765,
         except OSError as exc:
             print(f"error: cannot use upload folder: {exc}", file=sys.stderr)
             return 2
+    state_dir = (Path(upload_dir).expanduser() if upload_dir else default_upload_dir()).parent
     try:
-        app = WebApp(roots, None if no_auth else token, uploads=uploads)
+        state_dir.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        state_dir = None   # settings then last until the server stops
+    try:
+        app = WebApp(roots, None if no_auth else token, uploads=uploads, state_dir=state_dir)
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2

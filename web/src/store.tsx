@@ -23,6 +23,11 @@ interface Ctx {
   dismiss: (id: number) => void;
   refreshRepos: () => Promise<void>;
   refreshJobs: () => Promise<void>;
+  refreshStatus: () => Promise<void>;
+  /** Set the model for every new scan and fix ("" = back to the configured default). */
+  setModel: (model: string) => Promise<boolean>;
+  /** Bumped when server settings change, so open pages reload. */
+  settingsVersion: number;
   startJob: (repoId: string, action: "scan" | "fix", body: Record<string, unknown>, note?: string) => Promise<Job | null>;
   cancelJob: (id: string) => Promise<void>;
   jobsOpen: boolean;
@@ -55,6 +60,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [repoVersion, setRepoVersion] = useState<Record<string, number>>({});
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [jobsOpen, setJobsOpen] = useState(false);
+  const [settingsVersion, setSettingsVersion] = useState(0);
   const [focusJob, setFocusJob] = useState<string | null>(null);
   const openJob = useCallback((id: string) => {
     setFocusJob(id);
@@ -138,6 +144,22 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
   }, [refreshRepos, toast, openJob]);
 
+  const setModel = useCallback(
+    async (model: string) => {
+      try {
+        const r = await api<{ model: string; model_source: string }>("settings", { method: "POST", body: { model } });
+        await refreshStatus();
+        setSettingsVersion((v) => v + 1);
+        toast({ text: r.model_source === "ui" ? `New scans and fixes use ${r.model}.` : `Back to the default model, ${r.model}.`, kind: "ok" });
+        return true;
+      } catch (err) {
+        handleError(err);
+        return false;
+      }
+    },
+    [refreshStatus, toast, handleError],
+  );
+
   const startJob = useCallback(
     async (repoId: string, action: "scan" | "fix", body: Record<string, unknown>, note?: string) => {
       try {
@@ -195,8 +217,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, [jobs]);
 
   const value = useMemo<Ctx>(
-    () => ({ authed, setAuthed, status, repos, jobs, repoVersion, toasts, toast, dismiss, refreshRepos, refreshJobs, startJob, cancelJob, jobsOpen, setJobsOpen, openJob, focusJob, handleError }),
-    [authed, status, repos, jobs, repoVersion, toasts, toast, dismiss, refreshRepos, refreshJobs, startJob, cancelJob, jobsOpen, openJob, focusJob, handleError],
+    () => ({ authed, setAuthed, status, repos, jobs, repoVersion, toasts, toast, dismiss, refreshRepos, refreshJobs, refreshStatus, setModel, settingsVersion, startJob, cancelJob, jobsOpen, setJobsOpen, openJob, focusJob, handleError }),
+    [authed, status, repos, jobs, repoVersion, toasts, toast, dismiss, refreshRepos, refreshJobs, refreshStatus, setModel, settingsVersion, startJob, cancelJob, jobsOpen, openJob, focusJob, handleError],
   );
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
 }
