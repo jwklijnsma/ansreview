@@ -16,6 +16,13 @@ YAML_EXT = {".yml", ".yaml"}
 TEXT_EXT = YAML_EXT | {".j2", ".jinja", ".jinja2", ".cfg", ".ini", ".conf", ".sh", ".py", ".json", ""}
 ROLE_DIRS = {"tasks", "handlers", "defaults", "vars", "meta", "templates", "files", "library", "filter_plugins"}
 VARS_DIRS = {"group_vars", "host_vars", "inventory", "inventories"}
+# A folder is a role when one of these has a main.yml, wherever the folder sits: Ansible
+# also finds roles next to the playbook, not only under roles/.
+ROLE_MARKER_DIRS = ("tasks", "handlers", "defaults", "vars", "meta")
+MAIN_FILES = ("main.yml", "main.yaml")
+PROJECT_MARKERS = ("ansible.cfg", "roles", "playbooks", "site.yml", "site.yaml", "group_vars",
+                   "host_vars", "inventory", "inventories", "requirements.yml", "hosts.yml",
+                   "hosts.yaml", "hosts.ini", "inventory.yml", "inventory.ini", "galaxy.yml")
 MAX_FILE_BYTES = 512 * 1024
 
 
@@ -40,12 +47,52 @@ def iter_files(root: Path, exclude: list[str]):
         yield path, rel
 
 
-def _role_root(rel_parts: tuple[str, ...]) -> str | None:
-    """Return 'roles/<name>' (or nested equivalent) if the path lives inside a role."""
+def _role_root(rel_parts: tuple[str, ...], role_roots: set[str] = frozenset()) -> str | None:
+    """Return the role folder a path lives in ('roles/<name>', '<name>', '' for a
+    single-role repository), or None."""
     for i, part in enumerate(rel_parts[:-1]):
         if part == "roles" and i + 2 < len(rel_parts) and rel_parts[i + 2] in ROLE_DIRS:
             return "/".join(rel_parts[: i + 2])
+    # Deepest known role folder whose next path part is a role subfolder (tasks/, ...).
+    for depth in range(len(rel_parts) - 2, -1, -1):
+        root = "/".join(rel_parts[:depth])
+        if root in role_roots and rel_parts[depth] in ROLE_DIRS:
+            return root
     return None
+
+
+def _role_roots(rels: list[str]) -> set[str]:
+    """Folders that are roles because they hold tasks/main.yml, defaults/main.yml, ..."""
+    roots = set()
+    for rel in rels:
+        parts = rel.split("/")
+        if len(parts) >= 2 and parts[-1] in MAIN_FILES and parts[-2] in ROLE_MARKER_DIRS:
+            root = "/".join(parts[:-2])
+            # not inside another role's files/ or templates/
+            if not any(seg in ("files", "templates") for seg in parts[:-2]):
+                roots.add(root)
+    return roots
+
+
+def is_role_dir(d: Path) -> bool:
+    return any((d / sub / name).is_file() for sub in ROLE_MARKER_DIRS for name in MAIN_FILES)
+
+
+def looks_like_project(p: Path, max_yaml: int = 25) -> bool:
+    """Is this folder an Ansible project? Known marker files, a single role, roles next to
+    the playbooks (any subfolder with tasks/main.yml, ...), or playbooks at the top."""
+    try:
+        if any((p / m).exists() for m in PROJECT_MARKERS) or is_role_dir(p):
+            return True
+        entries = sorted(p.iterdir())[:500]
+    except OSError:
+        return False
+    for e in entries:
+        if e.is_dir() and not e.name.startswith(".") and is_role_dir(e):
+            return True
+    ymls = [e for e in entries if e.suffix.lower() in YAML_EXT and e.is_file()
+            and not e.is_symlink() and e.stat().st_size <= 256 * 1024]
+    return any(_looks_like_playbook(e) for e in ymls[:max_yaml])
 
 
 def _looks_like_playbook(path: Path) -> bool:
@@ -68,10 +115,12 @@ def discover(root: Path, exclude: list[str]) -> list[Unit]:
     other: dict[str, list[str]] = defaultdict(list)
     playbooks: list[Unit] = []
 
-    for path, rel in iter_files(root, exclude):
+    files = list(iter_files(root, exclude))
+    role_roots = _role_roots([rel for _, rel in files])
+    for path, rel in files:
         parts = tuple(rel.split("/"))
-        role = _role_root(parts)
-        if role:
+        role = _role_root(parts, role_roots)
+        if role is not None:
             roles[role].append(rel)
             continue
         if any(p in VARS_DIRS for p in parts[:-1]) or parts[0] in VARS_DIRS:
@@ -90,8 +139,14 @@ def discover(root: Path, exclude: list[str]) -> list[Unit]:
                 parent = "/".join(parts[:-1]) or "."
                 other[parent].append(rel)
 
-    units = [Unit("role", r.split("/")[-1] if r.count("/") == 1 else r, sorted(f))
-             for r, f in sorted(roles.items())]
+    def role_name(r: str) -> str:
+        if r == "":
+            return root.resolve().name or "role"     # single-role repository
+        if r.count("/") == 1 and r.startswith("roles/"):
+            return r.split("/")[-1]
+        return r
+
+    units = [Unit("role", role_name(r), sorted(f)) for r, f in sorted(roles.items())]
     units += playbooks
     units += [Unit("vars", k, sorted(v)) for k, v in sorted(vars_units.items())]
     units += [Unit("other", k, sorted(v)) for k, v in sorted(other.items())

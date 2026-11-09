@@ -145,8 +145,9 @@ def find_project_root(path: Path, looks_like_repo) -> Path:
         break
     if looks_like_repo(path):
         return path
-    raise UploadError("no Ansible project found in the ZIP (looked for ansible.cfg, roles/, "
-                      "playbooks/, site.yml, inventory, group_vars/ …)", 422)
+    raise UploadError("no Ansible project found in the ZIP: no playbooks (YAML with hosts:), "
+                      "no roles (a folder with tasks/main.yml), and no ansible.cfg, inventory "
+                      "or group_vars/", 422)
 
 
 def _git(path: Path, *args: str) -> bool:
