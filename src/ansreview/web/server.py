@@ -35,6 +35,7 @@ from urllib.parse import parse_qs, quote, unquote, urlsplit
 
 from .. import __version__
 from ..config import load_config
+from ..discover import looks_like_project
 from ..models import Severity
 from .uploads import UploadError, UploadStore
 
@@ -59,8 +60,7 @@ ARTIFACTS = {
     "fix.patch": ("Patch", "fix"),
     "fix-report.md": ("Fix report", "fix"),
 }
-REPO_MARKERS = ("ansible.cfg", "roles", "playbooks", "site.yml", "site.yaml",
-                "group_vars", "host_vars", "inventory", "requirements.yml")
+_REPO_CACHE: dict[str, tuple[int, bool]] = {}
 LINT_PROFILES = ("min", "basic", "moderate", "safety", "shared", "production")
 SEVERITIES = tuple(s.label for s in Severity)
 
@@ -257,7 +257,20 @@ class WebApp:
     # ---- repositories
     @staticmethod
     def _looks_like_repo(p: Path) -> bool:
-        return (p / ".git").exists() or any((p / m).exists() for m in REPO_MARKERS)
+        """A git repo, or an Ansible project in any common layout (see looks_like_project).
+        Cached per folder until the folder's own entries change."""
+        try:
+            key, mtime = str(p), p.stat().st_mtime_ns
+        except OSError:
+            return False
+        hit = _REPO_CACHE.get(key)
+        if hit and hit[0] == mtime:
+            return hit[1]
+        ok = (p / ".git").exists() or looks_like_project(p)
+        if len(_REPO_CACHE) > 2000:
+            _REPO_CACHE.clear()
+        _REPO_CACHE[key] = (mtime, ok)
+        return ok
 
     def list_repos(self) -> list[dict]:
         out = []
