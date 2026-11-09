@@ -110,12 +110,15 @@ ansreview serve --root ~/git/infra --root ~/git/platform --open
 It prints a link with an access token (`http://localhost:8765/?token=…`). Open it once; the token becomes a cookie. From the browser you can:
 
 - pick a repository and run a **scan**, with the same options as the CLI (diff mode, only some roles, model override, skip the model, lint profile);
-- watch it live: per-file progress from `queue.json`, the log, and a Cancel button;
+- let it run in the **background**: scans and fixes go into a queue on the server and keep running when you close the page. The **Jobs** button in the top bar shows what is running, what is waiting (with its place in the queue) and what finished, with progress, the log, Cancel/Remove, and download buttons;
 - browse findings by severity, source (AR / ansible-lint / model) or rule, with the suggested fix and the code around each line;
 - **Preview fixes** (`fix --dry-run`) and read the fix report and colour diff, then **Apply fixes**. Nothing is ever committed; review with `git diff` as usual.
-- **Upload a ZIP** of an Ansible repo (button or drag and drop). It is unpacked, scanned straight away, and can be fixed like any other repo; **Download fixed ZIP** gives it back with the fixes applied. A GitHub "Download ZIP" works as-is.
+- **Upload a ZIP** of an Ansible repo (button or drag and drop). It is unpacked and its scan is queued straight away. **Fix & download** fixes it in the background; when it is done you get a notification with the fixed ZIP. A GitHub "Download ZIP" works as-is.
+- **download** the results: every finished job offers its files (fixed ZIP, `fix.patch`, fix report, report as Markdown, JSON or SARIF), and each repo has a **Downloads** tab with the latest ones.
 
-Scans and fixes run as `ansreview scan|fix` subprocesses, so they behave exactly like the CLI and write the same `.ansreview/` reports. One job runs at a time, since they share the GPU. No extra dependencies and no CDN: it works on an air-gapped host.
+Scans and fixes run as `ansreview scan|fix` subprocesses, so they behave exactly like the CLI and write the same `.ansreview/` reports. Jobs run one at a time, in order, since they share the GPU; up to 20 can wait. The job list lives in the server process, so a restart of `ansreview serve` forgets it (the reports on disk stay).
+
+The UI is a React app (`web/`), built into `src/ansreview/web/static/` and shipped inside the Python package, so a normal install needs no Node and nothing is loaded from a CDN: it works on an air-gapped host.
 
 **Uploads** are unpacked into `~/.cache/ansreview/uploads` (`--upload-dir`), up to 100 MB per ZIP (`--max-upload-mb`), and deleted after 7 days (`--upload-keep-days`, or the Delete button). Each one becomes its own small git repository, so `fix` works on it. Extraction refuses paths that leave the folder, skips symlinks and any `.git`, and stops ZIP bombs (size, file count and compression ratio are checked on the bytes actually written). Note that ansible-lint runs on the uploaded code just as on a repo under `--root`, so only share the token with people you would let run ansible-lint on this host. `--no-upload` switches uploads off.
 
@@ -290,3 +293,14 @@ pytest
 ```
 
 Tests use a mock Ollama server (`tests/mock_ollama.py`), so they need no GPU.
+
+### Web UI
+
+The React app is in `web/` (Vite, TypeScript). `src/ansreview/web/static/` is its build output and is committed, so after changing `web/src/` run `make web` and commit both. CI rebuilds it and fails when they differ (for Renovate/Dependabot PRs it pushes the rebuilt bundle itself).
+
+```bash
+make serve        # API on :8765 (in one terminal)
+make web-dev      # http://localhost:5173 with hot reload, /api proxied to :8765
+make web-test     # typecheck + vitest
+make web          # production build into src/ansreview/web/static/
+```

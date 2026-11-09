@@ -5,7 +5,8 @@ BUMP   ?= patch
 IMAGE  ?= ansreview:dev
 
 .DEFAULT_GOAL := help
-.PHONY: help install test serve docker version release release-patch release-minor release-major release-dry-run
+
+.PHONY: help install test serve docker version web web-dev web-test release release-patch release-minor release-major release-dry-run
 
 help: ## show this list
 	@grep -hE '^[a-z-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  make %-16s %s\n", $$1, $$2}'
@@ -20,6 +21,15 @@ test: ## run the test suite
 
 serve: ## start the web UI for the repos in ../
 	$(PYTHON) -m ansreview serve --root .. --open
+
+web: ## build the React UI into src/ansreview/web/static (commit the result)
+	cd web && npm ci && npm run build
+
+web-dev: ## UI dev server with hot reload; run `make serve` (port 8765) next to it
+	cd web && npm run dev
+
+web-test: ## typecheck and test the UI
+	cd web && npm run typecheck && npm test
 
 docker: ## build the Docker image locally (ansreview:dev)
 	docker build -t $(IMAGE) .

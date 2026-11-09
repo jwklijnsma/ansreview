@@ -245,7 +245,9 @@ def test_upload_scan_fix_download_delete(server):
     assert f.status_code == 200
 
     job = requests.post(f"{base}/api/repos/{rid}/fix", json={"no_lint_fix": True}, headers=POST).json()
-    assert wait(base, job["id"])["status"] == "done"
+    done = wait(base, job["id"])
+    assert done["status"] == "done"
+    assert done["downloads"][0]["name"] == "fixed.zip" and done["downloads"][0]["primary"]
     assert requests.get(f"{base}/api/repos/{rid}", headers=AUTH).json()["dirty"] is True
 
     dl = requests.get(f"{base}/api/repos/{rid}/download", headers=AUTH)

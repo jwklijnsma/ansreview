@@ -49,7 +49,16 @@ CSRF_HEADER = "X-Ansreview"
 MAX_BODY = 64 * 1024
 MAX_FILE = 2 * 1024 * 1024
 MAX_LOG_LINES = 20000
-KEEP_JOBS = 25
+KEEP_JOBS = 50
+MAX_PENDING = 20
+# Result files a job can offer for download: name -> (label, produced by)
+ARTIFACTS = {
+    "report.md": ("Report (Markdown)", "scan"),
+    "report.json": ("Report (JSON)", "scan"),
+    "report.sarif": ("Report (SARIF)", "scan"),
+    "fix.patch": ("Patch", "fix"),
+    "fix-report.md": ("Fix report", "fix"),
+}
 REPO_MARKERS = ("ansible.cfg", "roles", "playbooks", "site.yml", "site.yaml",
                 "group_vars", "host_vars", "inventory", "requirements.yml")
 LINT_PROFILES = ("min", "basic", "moderate", "safety", "shared", "production")
@@ -181,14 +190,21 @@ class Job:
     action: str
     argv: list[str]
     options: dict
+    path: Path | None = None
     status: str = "queued"          # queued | running | done | failed | cancelled
     exit_code: int | None = None
-    started: float = field(default_factory=time.time)
+    created: float = field(default_factory=time.time)
+    started: float | None = None
     ended: float | None = None
     lines: deque = field(default_factory=lambda: deque(maxlen=MAX_LOG_LINES))
     total_lines: int = 0
     proc: subprocess.Popen | None = None
     cancel_requested: bool = False
+    downloads: list = field(default_factory=list)
+
+    @property
+    def active(self) -> bool:
+        return self.status in ("queued", "running")
 
     def add_line(self, text: str):
         self.lines.append(text)
@@ -200,10 +216,14 @@ class Job:
         return list(itertools.islice(self.lines, start, None)), self.total_lines
 
     def summary(self) -> dict:
+        begin = self.started or self.created
         return {"id": self.id, "repo": self.repo_id, "repo_name": self.repo_name,
                 "action": self.action, "options": self.options, "status": self.status,
-                "exit_code": self.exit_code, "started": self.started, "ended": self.ended,
-                "seconds": round((self.ended or time.time()) - self.started, 1)}
+                "dry_run": bool(self.options.get("dry_run")),
+                "exit_code": self.exit_code, "created": self.created,
+                "started": self.started, "ended": self.ended,
+                "seconds": round((self.ended or time.time()) - begin, 1) if self.started else 0,
+                "downloads": self.downloads}
 
 
 # --------------------------------------------------------------------------- app
@@ -222,6 +242,10 @@ class WebApp:
         self.python = python or sys.executable
         self.lock = threading.Lock()
         self.jobs: dict[str, Job] = {}
+        # One worker runs the queue in order: every job shares the GPU (and ansible-lint).
+        self.cv = threading.Condition(self.lock)
+        self.pending: deque[str] = deque()
+        threading.Thread(target=self._worker, name="ansreview-jobs", daemon=True).start()
         self._status_cache: tuple[float, dict] | None = None
 
     # ---- auth
@@ -326,8 +350,23 @@ class WebApp:
                        "lint_profile": cfg.lint_profile, "workers": cfg.workers},
             "config_warnings": warnings,
             "last_commit": self._git(path, "log", "-1", "--format=%h %s"),
+            "artifacts": self._artifacts(repo_id, path),
         })
         return info
+
+    def _artifacts(self, repo_id: str, path: Path) -> list[dict]:
+        """Every downloadable result this repo has right now, newest kind first."""
+        base = f"/api/repos/{quote(repo_id, safe='')}"
+        out = []
+        if repo_id.startswith("u:"):
+            out.append({"name": "fixed.zip", "label": "Project as ZIP (with applied fixes)",
+                        "url": f"{base}/download"})
+        for name, (label, _) in ARTIFACTS.items():
+            f = path / ".ansreview" / name
+            if f.is_file():
+                out.append({"name": name, "label": label, "url": f"{base}/artifacts/{name}",
+                            "time": f.stat().st_mtime})
+        return out
 
     def _upload_meta(self, repo_id: str) -> dict | None:
         if not (repo_id or "").startswith("u:") or not self.uploads:
@@ -351,9 +390,8 @@ class WebApp:
         if not repo_id.startswith("u:") or not self.uploads:
             raise ApiError(404, "only uploads can be deleted")
         with self.lock:
-            busy = self.running_job()
-            if busy and busy.repo_id == repo_id:
-                raise ApiError(409, "a job is running on this upload; cancel it first")
+            if any(j.active and j.repo_id == repo_id for j in self.jobs.values()):
+                raise ApiError(409, "a job is queued or running on this upload; cancel it first")
             try:
                 self.uploads.delete(repo_id[2:])
             except UploadError as exc:
@@ -440,27 +478,49 @@ class WebApp:
 
     # ---- jobs
     def running_job(self) -> Job | None:
-        return next((j for j in self.jobs.values() if j.status in ("queued", "running")), None)
+        return next((j for j in self.jobs.values() if j.status == "running"), None)
 
     def start_job(self, repo_id: str, action: str, opts: dict) -> Job:
+        """Queue a scan or fix. It runs in the background, after the jobs before it."""
         path = self.resolve_repo(repo_id)
         opts = {k: v for k, v in (opts or {}).items() if v not in (None, "", False, [])}
         argv = build_argv(action, path, opts)
-        with self.lock:
-            busy = self.running_job()
-            if busy:
-                raise ApiError(409, f"a {busy.action} of {busy.repo_name} is still running; "
-                                    "wait for it or cancel it first")
+        with self.cv:
+            for j in self.jobs.values():
+                if j.active and j.repo_id == repo_id and j.action == action \
+                        and j.options == opts:
+                    raise ApiError(409, f"the same {action} of {j.repo_name} is already "
+                                        f"{'running' if j.status == 'running' else 'queued'}")
+            if len(self.pending) >= MAX_PENDING:
+                raise ApiError(429, f"{MAX_PENDING} jobs are already waiting; try again later")
             meta = self._upload_meta(repo_id)
             job = Job(id=secrets.token_hex(6), repo_id=repo_id,
                       repo_name=meta["name"] if meta else path.name,
-                      action=action, argv=argv, options=opts)
+                      action=action, argv=argv, options=opts, path=path)
             self.jobs[job.id] = job
-            for old in sorted(self.jobs.values(), key=lambda j: j.started)[:-KEEP_JOBS]:
-                if old.status not in ("queued", "running"):
-                    self.jobs.pop(old.id, None)
-        threading.Thread(target=self._run, args=(job, path), daemon=True).start()
+            self.pending.append(job.id)
+            finished = sorted((j for j in self.jobs.values() if not j.active),
+                              key=lambda j: j.created)
+            for old in finished[:max(0, len(self.jobs) - KEEP_JOBS)]:
+                self.jobs.pop(old.id, None)
+            self.cv.notify()
         return job
+
+    def _worker(self):
+        while True:
+            with self.cv:
+                while not self.pending:
+                    self.cv.wait()
+                job = self.jobs.get(self.pending.popleft())
+                if not job or job.status != "queued":
+                    continue
+                job.status = "running"
+                job.started = time.time()
+            try:
+                self._run(job, job.path)
+            except Exception as exc:  # noqa: BLE001 - a broken job must not stop the queue
+                job.add_line(f"error: {exc.__class__.__name__}: {exc}")
+                job.status, job.ended = "failed", time.time()
 
     def _run(self, job: Job, repo: Path):
         # `python -m` puts the working directory first on sys.path, so running from inside
@@ -481,24 +541,62 @@ class WebApp:
             job.add_line(f"error: could not start: {exc}")
             job.status, job.ended = "failed", time.time()
             return
-        job.status = "running"
         assert job.proc.stdout is not None
         for line in job.proc.stdout:
             job.add_line(line.rstrip("\n"))
         job.exit_code = job.proc.wait()
         job.ended = time.time()
+        job.add_line(f"[exit {job.exit_code}]")
         if job.cancel_requested:
             job.status = "cancelled"
         elif job.action == "scan":
             job.status = "done" if job.exit_code in (0, 1) else "failed"
         else:
             job.status = "done" if job.exit_code == 0 else "failed"
-        job.add_line(f"[exit {job.exit_code}]")
+        if job.status == "done":
+            job.downloads = self._downloads_for(job, repo)
+
+    def _downloads_for(self, job: Job, repo: Path) -> list[dict]:
+        """What this job produced, as download links (only files written by this run)."""
+        base = f"/api/repos/{quote(job.repo_id, safe='')}"
+        out = []
+        for name, (label, kind) in ARTIFACTS.items():
+            f = repo / ".ansreview" / name
+            if kind == job.action and f.is_file() and f.stat().st_mtime >= (job.started or 0) - 2:
+                out.append({"name": name, "label": label, "url": f"{base}/artifacts/{name}"})
+        if job.action == "fix" and job.repo_id.startswith("u:") and not job.options.get("dry_run"):
+            out.insert(0, {"name": "fixed.zip", "label": "Fixed ZIP", "url": f"{base}/download",
+                           "primary": True})
+        elif job.action == "fix" and out:
+            out[0]["primary"] = True
+        return out
+
+    def artifact(self, repo_id: str, name: str) -> tuple[bytes, str, str]:
+        if name not in ARTIFACTS:
+            raise ApiError(404, "unknown file")
+        path = self.resolve_repo(repo_id)
+        f = path / ".ansreview" / name
+        if not f.is_file():
+            raise ApiError(404, f"{name} does not exist yet")
+        meta = self._upload_meta(repo_id)
+        stem = re.sub(r"[^A-Za-z0-9._-]+", "-", meta["name"] if meta else path.name)
+        ctype = {"md": "text/markdown; charset=utf-8", "json": "application/json",
+                 "sarif": "application/sarif+json", "patch": "text/x-diff; charset=utf-8"}
+        return f.read_bytes(), f"{stem}-{name}", ctype[name.rsplit(".", 1)[1]]
 
     def cancel_job(self, job_id: str) -> Job:
         job = self.jobs.get(job_id)
         if not job:
             raise ApiError(404, "unknown job")
+        with self.cv:
+            if job.status == "queued":
+                try:
+                    self.pending.remove(job.id)
+                except ValueError:
+                    pass
+                job.status, job.ended = "cancelled", time.time()
+                job.add_line("cancelled before it started")
+                return job
         if job.proc and job.proc.poll() is None:
             job.cancel_requested = True
             try:
@@ -510,17 +608,39 @@ class WebApp:
                 pass
         return job
 
+    def job_list(self) -> list[dict]:
+        with self.cv:
+            order = list(self.pending)
+        out = []
+        for j in sorted(self.jobs.values(), key=lambda j: j.created, reverse=True):
+            d = j.summary()
+            d["position"] = order.index(j.id) + 1 if j.id in order else None
+            if j.status == "running":
+                d["progress"] = self._progress(j)
+            out.append(d)
+        return out
+
+    def _progress(self, job: Job) -> dict | None:
+        try:
+            q = self.queue(job.repo_id)
+        except ApiError:
+            return None
+        if not q or q.get("stage") != job.action:
+            return None
+        counts = q.get("counts") or {}
+        running = next((f.get("file") for f in q.get("files") or []
+                        if f.get("status") == "running"), None)
+        return {"total": q.get("total") or 0,
+                "done": sum(counts.get(k, 0) for k in ("done", "cached", "failed")),
+                "file": running}
+
     def job_detail(self, job_id: str, since: int = 0) -> dict:
         job = self.jobs.get(job_id)
         if not job:
             raise ApiError(404, "unknown job")
         lines, nxt = job.log_since(since)
-        out = job.summary()
+        out = next((d for d in self.job_list() if d["id"] == job_id), job.summary())
         out.update(lines=lines, next=nxt)
-        try:
-            out["queue"] = self.queue(job.repo_id)
-        except ApiError:
-            out["queue"] = None
         return out
 
 
@@ -690,6 +810,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, data, "application/zip", {
                     "Content-Disposition": f"attachment; filename=\"{safe}\"; "
                                            f"filename*=UTF-8''{quote(name)}"})
+            if method == "GET" and len(rest) == 2 and rest[0] == "artifacts":
+                data, name, ctype = app.artifact(rid, rest[1])
+                return self._send(200, data, ctype, {
+                    "Content-Disposition": f"attachment; filename=\"{name}\""})
             if method == "POST" and rest == ["delete"]:
                 app.delete_upload(rid)
                 return self._json(200, {"ok": True})
@@ -697,8 +821,7 @@ class Handler(BaseHTTPRequestHandler):
                 job = app.start_job(rid, rest[0], self._body())
                 return self._json(202, job.summary())
         if method == "GET" and parts == ["jobs"]:
-            jobs = sorted(app.jobs.values(), key=lambda j: j.started, reverse=True)
-            return self._json(200, {"jobs": [j.summary() for j in jobs]})
+            return self._json(200, {"jobs": app.job_list()})
         if len(parts) == 2 and parts[0] == "jobs" and method == "GET":
             try:
                 since = int(q("since", "0"))
@@ -830,7 +953,7 @@ def serve(roots: list[Path], bind: str = "127.0.0.1", port: int = 8765,
         pass
     finally:
         for job in list(app.jobs.values()):
-            if job.proc and job.proc.poll() is None:
+            if job.active:
                 app.cancel_job(job.id)
         srv.server_close()
     return 0
