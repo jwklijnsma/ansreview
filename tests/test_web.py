@@ -254,3 +254,10 @@ def test_no_auth_refused_on_public_bind(repos, capsys):
     from ansreview.web.server import serve
     assert serve([repos], bind="0.0.0.0", port=0, no_auth=True) == 2
     assert "--no-auth" in capsys.readouterr().err
+
+
+def test_placeholder_token_refused(repos, capsys, monkeypatch):
+    from ansreview.web.server import serve
+    monkeypatch.setenv("ANSREVIEW_WEB_TOKEN", "change-me")
+    assert serve([repos], port=0, no_upload=True) == 2
+    assert "example value" in capsys.readouterr().err

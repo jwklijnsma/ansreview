@@ -130,9 +130,9 @@ Every push to `main` publishes `ghcr.io/jwklijnsma/ansreview` (amd64 + arm64) wi
 docker run -d --name ansreview -p 127.0.0.1:8765:8765 \
   --add-host=host.docker.internal:host-gateway \
   --user "$(id -u):$(id -g)" -v ~/git:/repos \
-  -e ANSREVIEW_WEB_TOKEN=change-me \
+  -e ANSREVIEW_WEB_TOKEN="$(openssl rand -base64 24)" \
   ghcr.io/jwklijnsma/ansreview
-# then open http://localhost:8765/?token=change-me
+# the link with the token: docker logs ansreview 2>&1 | grep open:
 
 # One-off scan of the current directory (CI, pre-merge checks)
 docker run --rm --add-host=host.docker.internal:host-gateway \
@@ -162,7 +162,7 @@ services:
     ports: ["127.0.0.1:8765:8765"]
     environment:
       OLLAMA_HOST: http://ollama:11434
-      ANSREVIEW_WEB_TOKEN: change-me
+      ANSREVIEW_WEB_TOKEN: ${ANSREVIEW_WEB_TOKEN:?put ANSREVIEW_WEB_TOKEN=... in .env}
     volumes: [~/git:/repos]
     depends_on: [ollama]
 volumes:
@@ -170,6 +170,39 @@ volumes:
 ```
 
 Pull the model once with `docker compose exec ollama ollama pull qwen2.5-coder:14b`.
+
+## Run as a service (systemd)
+
+Ready-made units are in [`deploy/systemd/`](deploy/systemd/). They start the container at boot, restart it on failure, log to the journal and keep uploads in a volume.
+
+**Podman (RHEL, Fedora): Quadlet, rootless, as the user who owns the repos**
+
+```bash
+mkdir -p ~/.config/containers/systemd ~/.config/ansreview
+cp deploy/systemd/ansreview.container ~/.config/containers/systemd/
+install -m 600 deploy/systemd/ansreview.env.example ~/.config/ansreview/ansreview.env
+sed -i "s|^ANSREVIEW_WEB_TOKEN=.*|ANSREVIEW_WEB_TOKEN=$(openssl rand -base64 24)|" ~/.config/ansreview/ansreview.env
+systemctl --user daemon-reload
+systemctl --user start ansreview
+loginctl enable-linger "$USER"                           # keeps running without a login
+systemctl --user enable --now podman-auto-update.timer   # pulls new images daily
+```
+
+The repositories come from `~/git`; change the `Volume=%h/git:/repos:z` line for another folder. Reports and fixes stay owned by you (`UserNS=keep-id`). Ollama on the same host is reached as `host.containers.internal`, so it must listen on more than 127.0.0.1 (`systemctl edit ollama` → `Environment=OLLAMA_HOST=0.0.0.0`). For Ollama on another machine, change the unit's `Environment=OLLAMA_HOST=` line.
+
+**Docker**
+
+```bash
+sudo mkdir -p /etc/ansreview
+sudo install -m 600 deploy/systemd/ansreview.env.example /etc/ansreview/ansreview.env   # set the token
+sudo cp deploy/systemd/ansreview-docker.service /etc/systemd/system/ansreview.service
+sudo systemctl edit ansreview     # REPOS=/path/to/repos, RUN_AS=uid:gid of their owner
+sudo systemctl enable --now ansreview
+```
+
+It pulls the newest image on every restart (`sudo systemctl restart ansreview` updates it).
+
+Both: the UI is on `http://localhost:8765/?token=<your token>` and the logs are in `journalctl [--user] -u ansreview -f`. The server refuses to start while the token is still the example value. Both units drop all capabilities and set no-new-privileges.
 
 ## Releasing
 

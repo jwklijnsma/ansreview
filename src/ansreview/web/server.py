@@ -761,6 +761,9 @@ def make_server(app: WebApp, bind: str = "127.0.0.1", port: int = 8765,
     return _Server((bind, port), app, verbose)
 
 
+PLACEHOLDER_TOKENS = {"change-me", "changeme", "change_me", "secret", "token"}
+
+
 def default_upload_dir() -> Path:
     base = os.environ.get("XDG_CACHE_HOME") or str(Path.home() / ".cache")
     return Path(base) / "ansreview" / "uploads"
@@ -775,6 +778,10 @@ def serve(roots: list[Path], bind: str = "127.0.0.1", port: int = 8765,
         return 2
     if not no_auth:
         token = token or os.environ.get("ANSREVIEW_WEB_TOKEN") or secrets.token_urlsafe(24)
+        if token.strip().lower() in PLACEHOLDER_TOKENS:
+            print(f"error: the access token is still the example value '{token}'; set your own "
+                  "(e.g. openssl rand -base64 24)", file=sys.stderr)
+            return 2
     uploads = None
     if not no_upload:
         from .uploads import Limits
