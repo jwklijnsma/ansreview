@@ -36,6 +36,7 @@ from urllib.parse import parse_qs, quote, unquote, urlsplit
 from .. import __version__
 from ..config import load_config
 from ..models import Severity
+from .uploads import UploadError, UploadStore
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 STATIC_FILES = {"/": ("index.html", "text/html; charset=utf-8"),
@@ -210,7 +211,9 @@ class Job:
 class WebApp:
     """Everything the HTTP handler needs; kept separate so tests can drive it directly."""
 
-    def __init__(self, roots: list[Path], token: str | None, python: str | None = None):
+    def __init__(self, roots: list[Path], token: str | None, python: str | None = None,
+                 uploads: UploadStore | None = None):
+        self.uploads = uploads
         self.roots = [Path(r).expanduser().resolve() for r in roots]
         for r in self.roots:
             if not r.is_dir():
@@ -246,9 +249,26 @@ class WebApp:
             for c in children:
                 if self._looks_like_repo(c):
                     out.append(self._repo_info(f"{i}:{c.name}", c.resolve()))
+        if self.uploads:
+            for meta in self.uploads.list():
+                try:
+                    project = self.uploads.project(meta["id"])
+                except (UploadError, OSError, KeyError):
+                    continue
+                out.append(self._repo_info(f"u:{meta['id']}", project, meta))
         return out
 
     def resolve_repo(self, repo_id: str) -> Path:
+        if (repo_id or "").startswith("u:"):
+            if not self.uploads:
+                raise ApiError(404, "unknown repository")
+            try:
+                path = self.uploads.project(repo_id[2:])
+            except UploadError:
+                raise ApiError(404, "unknown repository") from None
+            if not path.is_dir():
+                raise ApiError(404, "unknown repository")
+            return path
         m = re.fullmatch(r"(\d+):(.+)", repo_id or "")
         if not m or int(m.group(1)) >= len(self.roots):
             raise ApiError(404, "unknown repository")
@@ -273,9 +293,10 @@ class WebApp:
             return None
         return p.stdout.strip() if p.returncode == 0 else None
 
-    def _repo_info(self, repo_id: str, path: Path) -> dict:
+    def _repo_info(self, repo_id: str, path: Path, upload: dict | None = None) -> dict:
         report = path / ".ansreview" / "report.json"
-        info = {"id": repo_id, "name": path.name, "path": str(path),
+        info = {"id": repo_id, "name": upload["name"] if upload else path.name,
+                "path": str(path), "upload": _upload_public(upload),
                 "branch": self._git(path, "rev-parse", "--abbrev-ref", "HEAD"),
                 "report_time": None, "counts": None, "fix_time": None, "model": None}
         if report.is_file():
@@ -293,7 +314,7 @@ class WebApp:
 
     def repo_detail(self, repo_id: str) -> dict:
         path = self.resolve_repo(repo_id)
-        info = self._repo_info(repo_id, path)
+        info = self._repo_info(repo_id, path, self._upload_meta(repo_id))
         cfg, warnings = load_config(path)
         status = self._git(path, "status", "--porcelain", "-uno", "--", ".",
                            ":(exclude).ansreview")
@@ -307,6 +328,44 @@ class WebApp:
             "last_commit": self._git(path, "log", "-1", "--format=%h %s"),
         })
         return info
+
+    def _upload_meta(self, repo_id: str) -> dict | None:
+        if not (repo_id or "").startswith("u:") or not self.uploads:
+            return None
+        try:
+            return self.uploads.meta(repo_id[2:])
+        except (UploadError, OSError, ValueError):
+            return None
+
+    # ---- uploads
+    def add_upload(self, stream, length: int, filename: str) -> dict:
+        if not self.uploads:
+            raise ApiError(403, "uploads are switched off on this server (--no-upload)")
+        try:
+            meta = self.uploads.add(stream, length, filename, self._looks_like_repo)
+        except UploadError as exc:
+            raise ApiError(exc.status, exc.message) from None
+        return {"id": f"u:{meta['id']}", **_upload_public(meta)}
+
+    def delete_upload(self, repo_id: str) -> None:
+        if not repo_id.startswith("u:") or not self.uploads:
+            raise ApiError(404, "only uploads can be deleted")
+        with self.lock:
+            busy = self.running_job()
+            if busy and busy.repo_id == repo_id:
+                raise ApiError(409, "a job is running on this upload; cancel it first")
+            try:
+                self.uploads.delete(repo_id[2:])
+            except UploadError as exc:
+                raise ApiError(exc.status, exc.message) from None
+
+    def download_upload(self, repo_id: str) -> tuple[bytes, str]:
+        if not repo_id.startswith("u:") or not self.uploads:
+            raise ApiError(404, "only uploads can be downloaded")
+        try:
+            return self.uploads.download(repo_id[2:])
+        except UploadError as exc:
+            raise ApiError(exc.status, exc.message) from None
 
     def report(self, repo_id: str) -> dict:
         path = self.resolve_repo(repo_id)
@@ -365,7 +424,10 @@ class WebApp:
         st = {"version": __version__, "ollama_host": cfg.ollama_host, "model": cfg.model,
               "ollama": None, "model_available": None, "models": [],
               "ansible_lint": lint.version(),
-              "roots": [str(r) for r in self.roots], "auth": self.token is not None}
+              "roots": [str(r) for r in self.roots], "auth": self.token is not None,
+              "uploads": ({"enabled": True, "max_mb": self.uploads.limits.max_upload // 2**20,
+                           "keep_days": self.uploads.keep_days}
+                          if self.uploads else {"enabled": False})}
         client = OllamaClient(cfg.ollama_host, cfg.model, api_key=cfg.api_key, timeout=5)
         try:
             st["ollama"] = client.version()
@@ -389,7 +451,9 @@ class WebApp:
             if busy:
                 raise ApiError(409, f"a {busy.action} of {busy.repo_name} is still running; "
                                     "wait for it or cancel it first")
-            job = Job(id=secrets.token_hex(6), repo_id=repo_id, repo_name=path.name,
+            meta = self._upload_meta(repo_id)
+            job = Job(id=secrets.token_hex(6), repo_id=repo_id,
+                      repo_name=meta["name"] if meta else path.name,
                       action=action, argv=argv, options=opts)
             self.jobs[job.id] = job
             for old in sorted(self.jobs.values(), key=lambda j: j.started)[:-KEEP_JOBS]:
@@ -554,7 +618,11 @@ class Handler(BaseHTTPRequestHandler):
         path = url.path
         qs = parse_qs(url.query)
         try:
-            if method == "POST":
+            if method == "POST" and path == "/api/uploads":
+                # Streamed to disk after the auth checks; never kept in memory. One upload
+                # per connection, so an early refusal cannot leave half a body behind.
+                self.close_connection = True
+            elif method == "POST":
                 self._read_body()
             if method == "GET" and path in STATIC_FILES:
                 return self._static(path, qs)
@@ -603,6 +671,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, app.server_status())
         if method == "GET" and parts == ["repos"]:
             return self._json(200, {"repos": app.list_repos()})
+        if method == "POST" and parts == ["uploads"]:
+            return self._upload()
         if len(parts) >= 2 and parts[0] == "repos":
             rid = parts[1]
             rest = parts[2:]
@@ -614,6 +684,15 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(200, app.fix_result(rid))
             if method == "GET" and rest == ["file"]:
                 return self._json(200, app.read_file(rid, q("path", "")))
+            if method == "GET" and rest == ["download"]:
+                data, name = app.download_upload(rid)
+                safe = re.sub(r"[^A-Za-z0-9._-]", "_", name)
+                return self._send(200, data, "application/zip", {
+                    "Content-Disposition": f"attachment; filename=\"{safe}\"; "
+                                           f"filename*=UTF-8''{quote(name)}"})
+            if method == "POST" and rest == ["delete"]:
+                app.delete_upload(rid)
+                return self._json(200, {"ok": True})
             if method == "POST" and rest in (["scan"], ["fix"]):
                 job = app.start_job(rid, rest[0], self._body())
                 return self._json(202, job.summary())
@@ -629,6 +708,29 @@ class Handler(BaseHTTPRequestHandler):
         if len(parts) == 3 and parts[0] == "jobs" and parts[2] == "cancel" and method == "POST":
             return self._json(200, app.cancel_job(parts[1]).summary())
         raise ApiError(404, "not found")
+
+
+    def _upload(self):
+        try:
+            length = int(self.headers.get("Content-Length") or -1)
+        except ValueError:
+            length = -1
+        if length < 0:
+            raise ApiError(411, "Content-Length required")
+        ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+        if ctype not in ("application/zip", "application/x-zip-compressed",
+                         "application/octet-stream"):
+            raise ApiError(415, "send the ZIP file as the request body (application/zip)")
+        filename = unquote(self.headers.get("X-Filename") or "upload.zip")
+        result = self.app.add_upload(self.rfile, length, filename)
+        self._json(201, result)
+
+
+def _upload_public(meta: dict | None) -> dict | None:
+    if not meta:
+        return None
+    return {k: meta.get(k) for k in ("filename", "uploaded", "files", "bytes", "zip_bytes",
+                                     "skipped", "git")}
 
 
 class _Server(ThreadingHTTPServer):
@@ -659,16 +761,33 @@ def make_server(app: WebApp, bind: str = "127.0.0.1", port: int = 8765,
     return _Server((bind, port), app, verbose)
 
 
+def default_upload_dir() -> Path:
+    base = os.environ.get("XDG_CACHE_HOME") or str(Path.home() / ".cache")
+    return Path(base) / "ansreview" / "uploads"
+
+
 def serve(roots: list[Path], bind: str = "127.0.0.1", port: int = 8765,
           token: str | None = None, no_auth: bool = False, open_browser: bool = False,
-          verbose: bool = False) -> int:
+          verbose: bool = False, upload_dir: Path | None = None, no_upload: bool = False,
+          max_upload_mb: int = 100, upload_keep_days: float = 7) -> int:
     if no_auth and not is_loopback(bind):
         print("error: --no-auth is only allowed when binding to localhost", file=sys.stderr)
         return 2
     if not no_auth:
         token = token or os.environ.get("ANSREVIEW_WEB_TOKEN") or secrets.token_urlsafe(24)
+    uploads = None
+    if not no_upload:
+        from .uploads import Limits
+        try:
+            uploads = UploadStore(upload_dir or default_upload_dir(),
+                                  Limits(max_upload=max_upload_mb * 2**20,
+                                         max_unpacked=max(5 * max_upload_mb, 50) * 2**20),
+                                  keep_days=upload_keep_days)
+        except OSError as exc:
+            print(f"error: cannot use upload folder: {exc}", file=sys.stderr)
+            return 2
     try:
-        app = WebApp(roots, None if no_auth else token)
+        app = WebApp(roots, None if no_auth else token, uploads=uploads)
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
@@ -692,6 +811,9 @@ def serve(roots: list[Path], bind: str = "127.0.0.1", port: int = 8765,
     for r in app.roots:
         print(f"  root: {r}", file=sys.stderr)
     print(f"  {len(repos)} repositor{'y' if len(repos) == 1 else 'ies'} found", file=sys.stderr)
+    if uploads:
+        print(f"  uploads: {uploads.base} (max {max_upload_mb} MB, kept "
+              f"{upload_keep_days:g} days)", file=sys.stderr)
     print(f"  open: {url}", file=sys.stderr)
     if in_container:
         print("  (inside the container; use the host port you published, and publish it "

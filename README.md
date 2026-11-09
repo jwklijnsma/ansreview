@@ -113,8 +113,11 @@ It prints a link with an access token (`http://localhost:8765/?token=…`). Open
 - watch it live: per-file progress from `queue.json`, the log, and a Cancel button;
 - browse findings by severity, source (AR / ansible-lint / model) or rule, with the suggested fix and the code around each line;
 - **Preview fixes** (`fix --dry-run`) and read the fix report and colour diff, then **Apply fixes**. Nothing is ever committed; review with `git diff` as usual.
+- **Upload a ZIP** of an Ansible repo (button or drag and drop). It is unpacked, scanned straight away, and can be fixed like any other repo; **Download fixed ZIP** gives it back with the fixes applied. A GitHub "Download ZIP" works as-is.
 
 Scans and fixes run as `ansreview scan|fix` subprocesses, so they behave exactly like the CLI and write the same `.ansreview/` reports. One job runs at a time, since they share the GPU. No extra dependencies and no CDN: it works on an air-gapped host.
+
+**Uploads** are unpacked into `~/.cache/ansreview/uploads` (`--upload-dir`), up to 100 MB per ZIP (`--max-upload-mb`), and deleted after 7 days (`--upload-keep-days`, or the Delete button). Each one becomes its own small git repository, so `fix` works on it. Extraction refuses paths that leave the folder, skips symlinks and any `.git`, and stops ZIP bombs (size, file count and compression ratio are checked on the bytes actually written). Note that ansible-lint runs on the uploaded code just as on a repo under `--root`, so only share the token with people you would let run ansible-lint on this host. `--no-upload` switches uploads off.
 
 **Security.** By default it listens on `127.0.0.1` only and every API call needs the token (`--token` or `$ANSREVIEW_WEB_TOKEN` to fix it, otherwise a random one per start). Only repositories under the `--root` folders are reachable, and file reads cannot leave a repo. The Ollama host, output folder, config file and vault password file cannot be set from the browser. POSTs need a custom header, so other sites cannot trigger a scan. `--no-auth` is refused unless you bind to localhost. To reach it from another machine, prefer an SSH tunnel (`ssh -L 8765:localhost:8765 gpu-box`). If you do use `--bind 0.0.0.0`, put it behind a TLS reverse proxy, because the token travels in plain HTTP otherwise.
 

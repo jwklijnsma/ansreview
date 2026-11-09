@@ -402,7 +402,10 @@ def cmd_serve(a: argparse.Namespace) -> int:
     from .web import serve
     roots = [Path(r) for r in (a.root or ["."])]
     return serve(roots, bind=a.bind, port=a.port, token=a.token, no_auth=a.no_auth,
-                 open_browser=a.open, verbose=a.verbose)
+                 open_browser=a.open, verbose=a.verbose,
+                 upload_dir=Path(a.upload_dir) if a.upload_dir else None,
+                 no_upload=a.no_upload, max_upload_mb=a.max_upload_mb,
+                 upload_keep_days=a.upload_keep_days)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -503,6 +506,13 @@ def build_parser() -> argparse.ArgumentParser:
                    help="no access token (only allowed with a localhost --bind)")
     w.add_argument("--open", action="store_true", help="open the UI in a browser")
     w.add_argument("-v", "--verbose", action="store_true", help="log every request")
+    w.add_argument("--upload-dir", metavar="DIR",
+                   help="where uploaded ZIPs are unpacked (default ~/.cache/ansreview/uploads)")
+    w.add_argument("--max-upload-mb", type=int, default=100, metavar="MB",
+                   help="largest ZIP accepted (default 100)")
+    w.add_argument("--upload-keep-days", type=float, default=7, metavar="DAYS",
+                   help="delete uploads older than this (default 7, 0 = keep)")
+    w.add_argument("--no-upload", action="store_true", help="switch ZIP uploads off")
     w.set_defaults(func=cmd_serve)
     return p
 

@@ -140,6 +140,12 @@ jobs:
           test "$(docker inspect -f '{{.State.Health.Status}}' ansreview)" = healthy
           test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8765/api/repos)" = 401
           curl -fsS -H "Authorization: Bearer ci-token" http://127.0.0.1:8765/api/repos | tee /dev/stderr | grep -q '"sample"'
+          # ZIP upload: the upload folder lives in $HOME, which must be writable for any UID.
+          (cd "$RUNNER_TEMP" && python3 -c "import shutil; shutil.make_archive('sample', 'zip', 'sample')")
+          curl -fsS -H "Authorization: Bearer ci-token" -H "X-Ansreview: 1" \
+            -H "Content-Type: application/zip" -H "X-Filename: sample.zip" \
+            --data-binary @"$RUNNER_TEMP/sample.zip" http://127.0.0.1:8765/api/uploads \
+            | tee /dev/stderr | grep -q '"id": "u:'
           docker stop -t 15 ansreview
           code="$(docker inspect -f '{{.State.ExitCode}}' ansreview)"
           echo "exit code after docker stop: $code"
