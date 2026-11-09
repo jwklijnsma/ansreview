@@ -164,18 +164,26 @@ function renderRepos() {
   if (!state.repos.length) {
     list.append(h("li", { class: "empty-roots" },
       "No Ansible repositories found under ", (state.status?.roots || []).join(", "),
-      ". Start the server with --root pointing at a repo or a folder of repos."));
+      uploadsOn() ? ". Upload a ZIP above, or restart the server with --root pointing at a repo or a folder of repos."
+        : ". Start the server with --root pointing at a repo or a folder of repos."));
     return;
   }
-  for (const r of repos) {
+  const item = (r) => {
     const total = r.counts ? SEVS.reduce((a, s) => a + (r.counts[s] || 0), 0) : null;
-    list.append(h("li", {},
+    return h("li", {},
       h("button", { "aria-current": r.id === state.repoId ? "true" : "false", onclick: () => go(r.id, state.tab) },
-        h("div", { class: "repo-name" }, r.name),
+        h("div", { class: "repo-name" }, r.name, r.upload ? h("span", { class: "zip-badge" }, "ZIP") : null),
         h("div", { class: "repo-meta" },
-          r.branch ? r.branch + " · " : "",
-          r.report_time ? `${total} finding${total === 1 ? "" : "s"} · ${ago(r.report_time)}` : "not scanned yet"),
-        sevBar(r.counts))));
+          r.upload ? "uploaded " + ago(r.upload.uploaded) + " · " : r.branch ? r.branch + " · " : "",
+          r.report_time ? `${total} finding${total === 1 ? "" : "s"}` + (r.upload ? "" : " · " + ago(r.report_time)) : "not scanned yet"),
+        sevBar(r.counts)));
+  };
+  const local = repos.filter((r) => !r.upload);
+  const uploaded = repos.filter((r) => r.upload);
+  local.forEach((r) => list.append(item(r)));
+  if (uploaded.length) {
+    list.append(h("li", { class: "list-head" }, "Uploads"));
+    uploaded.forEach((r) => list.append(item(r)));
   }
 }
 $("repo-filter").addEventListener("input", renderRepos);
@@ -228,6 +236,10 @@ async function loadRepo() {
     if (r) { r.counts = detail.counts; r.report_time = detail.report_time; r.branch = detail.branch; }
     renderRepos();
     renderMain();
+    if (state.autoScan === id) {
+      state.autoScan = null;
+      if (!busy()) startJob("scan");
+    }
   } catch (err) {
     if (err instanceof AuthError) return;
     $("main").replaceChildren(h("div", { class: "empty" }, h("h3", {}, "Could not open this repository"), h("p", {}, err.message)));
@@ -259,21 +271,33 @@ function renderMain() {
 
 function renderHead(d) {
   const running = busy();
-  const sub = h("div", { class: "repo-sub" },
-    d.branch ? h("span", {}, "⎇ ", h("code", {}, d.branch)) : null,
-    d.last_commit ? h("span", { class: "mono" }, d.last_commit) : null,
-    d.dirty === null ? h("span", {}, "not a git repo") :
-      h("span", { class: "badge " + (d.dirty ? "dirty" : "clean"), title: (d.changed_files || []).join("\n") },
-        d.dirty ? `${d.changed_files.length} uncommitted` : "clean"),
-    h("span", {}, "model ", h("code", {}, d.config.model)),
-    h("span", { class: "path", title: d.path }, shortPath(d.path)));
+  const up = d.upload;
+  const sub = up ? h("div", { class: "repo-sub" },
+    h("span", { class: "zip-badge" }, "ZIP"),
+    h("span", { title: up.filename }, up.filename),
+    h("span", {}, `${up.files} files · ${size(up.bytes)}`),
+    h("span", {}, "uploaded " + ago(up.uploaded)),
+    d.dirty ? h("span", { class: "badge dirty", title: (d.changed_files || []).join("\n") }, `${d.changed_files.length} fixed file${d.changed_files.length === 1 ? "" : "s"}`) : null,
+    h("span", {}, "model ", h("code", {}, d.config.model)))
+    : h("div", { class: "repo-sub" },
+      d.branch ? h("span", {}, "⎇ ", h("code", {}, d.branch)) : null,
+      d.last_commit ? h("span", { class: "mono" }, d.last_commit) : null,
+      d.dirty === null ? h("span", {}, "not a git repo") :
+        h("span", { class: "badge " + (d.dirty ? "dirty" : "clean"), title: (d.changed_files || []).join("\n") },
+          d.dirty ? `${d.changed_files.length} uncommitted` : "clean"),
+      h("span", {}, "model ", h("code", {}, d.config.model)),
+      h("span", { class: "path", title: d.path }, shortPath(d.path)));
   const scanBtn = h("button", { class: "btn primary", disabled: running, onclick: () => startJob("scan") }, "Scan");
   const dryBtn = h("button", { class: "btn", disabled: running || !d.report_time, title: d.report_time ? "Write fix.patch only, change nothing" : "Scan first", onclick: () => startJob("fix", { dry_run: true }) }, "Preview fixes");
   const fixBtn = h("button", { class: "btn", disabled: running || !d.report_time, title: d.report_time ? "Write fixes to the working tree (never committed)" : "Scan first", onclick: () => startJob("fix", {}) }, "Apply fixes");
   return h("div", {},
     h("div", { class: "repo-head" },
       h("div", {}, h("h1", {}, d.name), sub),
-      h("div", { class: "actions" }, scanBtn, dryBtn, fixBtn)),
+      h("div", { class: "actions" }, scanBtn, dryBtn, fixBtn,
+        up ? h("a", { class: "btn", href: `/api/repos/${enc(d.id)}/download`, download: "",
+          title: d.dirty ? "The project with the applied fixes, as a ZIP" : "The uploaded project as a ZIP" },
+        d.dirty ? "Download fixed ZIP" : "Download ZIP") : null,
+        up ? h("button", { class: "btn danger", disabled: running && state.job?.data.repo === d.id, onclick: deleteUpload }, "Delete") : null)),
     d.config_warnings && d.config_warnings.length
       ? h("div", { class: "callout warn" }, d.config_warnings.map((w) => h("div", {}, w))) : null);
 }
@@ -341,11 +365,15 @@ async function startJob(action, extra) {
     body.only = (o.scan.only || "").split("\n").map((s) => s.trim()).filter(Boolean);
     if (o.scan.model && !body.model) body.model = o.scan.model;
     if (!body.dry_run) {
-      if (d.dirty && !body.allow_dirty) {
+      if (d.dirty && !body.allow_dirty && !d.upload) {
         toast("This repo has uncommitted changes. Commit or stash them, or tick “Allow uncommitted changes” in Options.");
         return;
       }
-      if (!confirm(`Apply fixes to ${d.name}?\n\nChanges are written to the working tree and never committed. Review them with git diff; undo with git checkout -- .`)) return;
+      if (d.upload && d.dirty) body.allow_dirty = true;   // fixes on top of earlier fixes
+      const msg = d.upload
+        ? `Apply fixes to the uploaded ${d.name}?\n\nOnly this server's copy changes. Download the fixed ZIP afterwards.`
+        : `Apply fixes to ${d.name}?\n\nChanges are written to the working tree and never committed. Review them with git diff; undo with git checkout -- .`;
+      if (!confirm(msg)) return;
     }
   }
   try {
@@ -607,6 +635,12 @@ function renderFixes() {
   }
   const wrap = h("div", {});
   wrap.append(h("div", { class: "summary-row" }, h("div", { class: "meta-chip", style: { marginLeft: 0, textAlign: "left" } }, "Last fix run " + ago(fx.time))));
+  if (state.detail && state.detail.upload) {
+    wrap.append(h("div", { class: "callout" },
+      "Fixes on an upload change only this server's copy (ignore the git hints below). ",
+      h("a", { href: `/api/repos/${enc(state.repoId)}/download`, download: "" }, "Download the fixed ZIP"),
+      " to take them with you."));
+  }
   if (fx.report_md) wrap.append(h("div", { class: "card" }, h("div", { class: "card-body md" }, markdown(fx.report_md))));
   const files = parseDiff(fx.patch || "");
   if (files.length) {
@@ -719,6 +753,102 @@ function renderNotes() {
           h("b", {}, u.name), " ", h("span", { style: { color: "var(--muted)" } }, `${u.kind} · ${u.files.length} file${u.files.length === 1 ? "" : "s"}`)))))));
 }
 
+// ---------------------------------------------------------------- uploads
+function uploadsOn() { return !!(state.status && state.status.uploads && state.status.uploads.enabled); }
+function size(n) {
+  if (n == null) return "";
+  return n < 1024 ? n + " B" : n < 1048576 ? (n / 1024).toFixed(0) + " KB" : (n / 1048576).toFixed(1) + " MB";
+}
+
+function uploadZip(file) {
+  if (!uploadsOn()) { toast("Uploads are switched off on this server."); return; }
+  if (!/\.zip$/i.test(file.name)) { toast("Choose a .zip file of an Ansible repository."); return; }
+  const max = state.status.uploads.max_mb * 1048576;
+  if (file.size > max) { toast(`${file.name} is ${size(file.size)}; the limit is ${state.status.uploads.max_mb} MB.`); return; }
+  const bar = $("upload-progress");
+  const fill = bar.firstElementChild;
+  bar.hidden = false;
+  fill.style.width = "0%";
+  $("upload-label").textContent = `Uploading ${file.name}…`;
+  $("upload-btn").disabled = true;
+  // XMLHttpRequest rather than fetch: it reports upload progress.
+  const xhr = new XMLHttpRequest();
+  xhr.open("POST", "/api/uploads");
+  xhr.withCredentials = true;
+  xhr.setRequestHeader("X-Ansreview", "1");
+  xhr.setRequestHeader("Content-Type", "application/zip");
+  xhr.setRequestHeader("X-Filename", encodeURIComponent(file.name));
+  xhr.upload.onprogress = (e) => {
+    if (!e.lengthComputable) return;
+    const pct = Math.round(100 * e.loaded / e.total);
+    fill.style.width = pct + "%";
+    $("upload-label").textContent = pct < 100 ? `Uploading ${file.name}… ${pct}%` : "Unpacking and checking…";
+  };
+  const done = () => { bar.hidden = true; $("upload-btn").disabled = false; $("upload-label").textContent = ""; };
+  xhr.onerror = () => { done(); toast("Upload failed: the connection was closed (file too large?)."); };
+  xhr.onload = async () => {
+    done();
+    let data = null;
+    try { data = JSON.parse(xhr.responseText); } catch (_) { /* not JSON */ }
+    if (xhr.status === 401) { showLogin(); return; }
+    if (xhr.status !== 201) { toast("Upload refused: " + ((data && data.error) || xhr.statusText)); return; }
+    toast(`${data.filename}: ${data.files} files unpacked` + (data.skipped ? `, ${data.skipped} skipped` : "") + ".");
+    // Uploading is asking for a review: scan as soon as its page has loaded (if the GPU is free).
+    state.autoScan = data.id;
+    await refreshRepos();
+    go(data.id, "findings");
+  };
+  xhr.send(file);
+}
+
+async function deleteUpload() {
+  const d = state.detail;
+  if (!d || !d.upload) return;
+  if (!confirm(`Delete the uploaded ${d.name} and its reports from this server?`)) return;
+  try {
+    await api(`repos/${enc(d.id)}/delete`, { method: "POST" });
+    toast(`${d.name} deleted.`);
+    state.repoId = null;
+    await refreshRepos();
+    location.hash = "";
+    renderWelcome();
+  } catch (err) {
+    if (!(err instanceof AuthError)) toast(err.message);
+  }
+}
+
+$("upload-btn").addEventListener("click", () => $("upload-input").click());
+$("upload-input").addEventListener("change", (e) => {
+  const f = e.target.files && e.target.files[0];
+  e.target.value = "";
+  if (f) uploadZip(f);
+});
+// Drop a ZIP anywhere on the page.
+let dragDepth = 0;
+window.addEventListener("dragenter", (e) => {
+  if (!uploadsOn() || $("app").hidden || ![...(e.dataTransfer?.types || [])].includes("Files")) return;
+  e.preventDefault();
+  dragDepth++;
+  $("dropzone").hidden = false;
+});
+window.addEventListener("dragover", (e) => { if (!$("dropzone").hidden) e.preventDefault(); });
+window.addEventListener("dragleave", () => {
+  if (--dragDepth <= 0) { dragDepth = 0; $("dropzone").hidden = true; }
+});
+window.addEventListener("drop", (e) => {
+  if ($("dropzone").hidden) return;
+  e.preventDefault();
+  dragDepth = 0;
+  $("dropzone").hidden = true;
+  const f = e.dataTransfer.files && e.dataTransfer.files[0];
+  if (f) uploadZip(f);
+});
+
+function renderUploadBox() {
+  $("upload-box").hidden = !uploadsOn();
+  if (uploadsOn()) $("upload-hint").textContent = `or drop it on the page · max ${state.status.uploads.max_mb} MB`;
+}
+
 // ---------------------------------------------------------------- boot
 async function refreshRepos() {
   const data = await api("repos");
@@ -727,7 +857,7 @@ async function refreshRepos() {
 }
 
 async function refreshStatus() {
-  try { state.status = await api("status"); renderStatus(); } catch (_) { /* shown via login or pills */ }
+  try { state.status = await api("status"); renderStatus(); renderUploadBox(); } catch (_) { /* shown via login or pills */ }
 }
 
 async function boot() {
@@ -738,7 +868,7 @@ async function boot() {
     return;
   }
   $("app").hidden = false;
-  refreshStatus();
+  await refreshStatus();
   setInterval(refreshStatus, 30000);
   try {
     const { jobs } = await api("jobs");

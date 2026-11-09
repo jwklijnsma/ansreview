@@ -334,6 +334,32 @@ details.options > summary .hint { color: var(--muted); font-weight: 400; font-si
   box-shadow: var(--shadow); font-size: 13px; z-index: 50;
 }
 
+/* ---------- uploads */
+.upload-box { padding: 0 6px 14px; margin-bottom: 12px; border-bottom: 1px solid var(--line); }
+.upload-btn { width: 100%; justify-content: center; }
+.upload-hint { color: var(--muted); font-size: 12px; text-align: center; margin-top: 6px; min-height: 0; overflow-wrap: anywhere; }
+.upload-box .progress { margin: 10px 0 0; }
+.zip-badge {
+  display: inline-block; font-size: 10px; font-weight: 700; letter-spacing: .05em;
+  padding: 0 5px; border-radius: 4px; background: var(--accent-soft); color: var(--accent);
+  border: 1px solid var(--accent); line-height: 1.5; margin-left: 2px;
+}
+.repo-sub .zip-badge { margin-left: 0; }
+.list-head {
+  font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted);
+  font-weight: 600; margin: 16px 8px 6px;
+}
+a.btn { text-decoration: none; color: inherit; }
+.dropzone {
+  position: fixed; inset: 0; z-index: 40; display: grid; place-items: center;
+  background: color-mix(in srgb, var(--bg) 82%, transparent);
+  backdrop-filter: blur(2px); pointer-events: none;
+}
+.dropzone > div {
+  border: 2px dashed var(--accent); border-radius: 16px; padding: 48px 56px;
+  font-size: 17px; font-weight: 600; color: var(--accent); background: var(--panel);
+}
+
 /* ---------- narrow screens */
 @media (max-width: 860px) {
   .layout { grid-template-columns: 1fr; }

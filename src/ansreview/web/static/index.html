@@ -29,6 +29,13 @@
 
   <div class="layout" id="app" hidden>
     <aside class="sidebar">
+      <div class="upload-box" id="upload-box" hidden>
+        <button class="btn primary upload-btn" id="upload-btn" type="button">Upload ZIP for review</button>
+        <input id="upload-input" type="file" accept=".zip,application/zip" hidden>
+        <div class="upload-hint" id="upload-hint"></div>
+        <div class="progress" id="upload-progress" hidden><div></div></div>
+        <div class="upload-hint" id="upload-label" aria-live="polite"></div>
+      </div>
       <h2>Repositories</h2>
       <input class="search" id="repo-filter" type="search" placeholder="Filter…" aria-label="Filter repositories">
       <ul class="repo-list" id="repos"></ul>
@@ -36,6 +43,7 @@
     <main id="main"></main>
   </div>
 
+  <div class="dropzone" id="dropzone" hidden><div>Drop the ZIP to upload it for review</div></div>
   <div class="toast" id="toast" role="status" hidden></div>
 </body>
 </html>
