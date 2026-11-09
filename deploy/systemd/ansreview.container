@@ -13,9 +13,8 @@
 # Then open http://localhost:8765/?token=<ANSREVIEW_WEB_TOKEN>.
 # Logs: journalctl --user -u ansreview -f
 #
-# Rootful instead: put this file in /etc/containers/systemd/, use absolute paths
-# below instead of %h, drop the UserNS/User/Group lines and use
-# `systemctl start ansreview` (no --user).
+# As root (/etc/containers/systemd/): use ansreview-rootful.container instead.
+# This file does not work rootful: keep-id is rootless-only and %h would be /root.
 
 [Unit]
 Description=ansreview: review Ansible code with ansible-lint and a local Ollama model

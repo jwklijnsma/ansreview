@@ -190,6 +190,8 @@ systemctl --user enable --now podman-auto-update.timer   # pulls new images dail
 
 The repositories come from `~/git`; change the `Volume=%h/git:/repos:z` line for another folder. Reports and fixes stay owned by you (`UserNS=keep-id`). Ollama on the same host is reached as `host.containers.internal`, so it must listen on more than 127.0.0.1 (`systemctl edit ollama` → `Environment=OLLAMA_HOST=0.0.0.0`). For Ollama on another machine, change the unit's `Environment=OLLAMA_HOST=` line.
 
+As a system service run by root instead (in `/etc/containers/systemd/`), use [`ansreview-rootful.container`](deploy/systemd/ansreview-rootful.container); its header has the steps.
+
 **Docker**
 
 ```bash
