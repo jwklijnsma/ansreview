@@ -35,6 +35,10 @@ Volume=ansreview-data:/home/ansreview/.cache/ansreview:U
 # and fixes are written as that user and never as root.
 User=1000
 Group=1000
+# No user namespace: with one (keep-id, or userns=auto in containers.conf) rootful
+# Podman must make an ID-mapped copy of the image, which fails on many hosts
+# ("creating an ID-mapped copy of layer", exit 125), e.g. in LXC.
+UserNS=host
 
 EnvironmentFile=/etc/ansreview/ansreview.env
 # Ollama on this host (it must listen on more than 127.0.0.1). For Ollama on another
