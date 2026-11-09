@@ -178,17 +178,16 @@ Ready-made units are in [`deploy/systemd/`](deploy/systemd/). They start the con
 **Podman (RHEL, Fedora): Quadlet, rootless, as the user who owns the repos**
 
 ```bash
-mkdir -p ~/.config/containers/systemd ~/.config/ansreview
+openssl rand -hex 24 | tr -d '\n' | podman secret create ansreview-token -   # the access token
+mkdir -p ~/.config/containers/systemd
 cp deploy/systemd/ansreview.container ~/.config/containers/systemd/
-install -m 600 deploy/systemd/ansreview.env.example ~/.config/ansreview/ansreview.env
-sed -i "s|^ANSREVIEW_WEB_TOKEN=.*|ANSREVIEW_WEB_TOKEN=$(openssl rand -hex 24)|" ~/.config/ansreview/ansreview.env
 systemctl --user daemon-reload
 systemctl --user start ansreview
 loginctl enable-linger "$USER"                           # keeps running without a login
 systemctl --user enable --now podman-auto-update.timer   # pulls new images daily
 ```
 
-The repositories come from `~/git`; change the `Volume=%h/git:/repos:z` line for another folder. Reports and fixes stay owned by you (`UserNS=keep-id`). Ollama on the same host is reached as `host.containers.internal`, so it must listen on more than 127.0.0.1 (`systemctl edit ollama` → `Environment=OLLAMA_HOST=0.0.0.0`). For Ollama on another machine, change the unit's `Environment=OLLAMA_HOST=` line.
+Show the token again with `podman secret inspect --showsecret --format '{{.SecretData}}' ansreview-token`. Optional settings (model, context size) go in `~/.config/ansreview/ansreview.env`, see `ansreview.env.example`. The repositories come from `~/git`; change the `Volume=%h/git:/repos:z` line for another folder. Reports and fixes stay owned by you (`UserNS=keep-id`). Ollama on the same host is reached as `host.containers.internal`, so it must listen on more than 127.0.0.1 (`systemctl edit ollama` → `Environment=OLLAMA_HOST=0.0.0.0`). For Ollama on another machine, change the unit's `Environment=OLLAMA_HOST=` line.
 
 As a system service run by root instead (in `/etc/containers/systemd/`), use [`ansreview-rootful.container`](deploy/systemd/ansreview-rootful.container); its header has the steps.
 
@@ -204,7 +203,7 @@ sudo systemctl enable --now ansreview
 
 It pulls the newest image on every restart (`sudo systemctl restart ansreview` updates it).
 
-Both: the UI is on `http://localhost:8765/?token=<your token>` and the logs are in `journalctl [--user] -u ansreview -f`. The server refuses to start while the token is still the example value. Both units drop all capabilities and set no-new-privileges.
+Both: the UI is on `http://localhost:8765/?token=<your token>` and the logs are in `journalctl [--user] -u ansreview -f`. The server refuses to start while the token is still the example value; without any token it makes up a new random one at every start. Both units drop all capabilities and set no-new-privileges.
 
 ## Releasing
 
