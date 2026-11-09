@@ -5,7 +5,9 @@
 #   docker run -d -p 127.0.0.1:8765:8765 \
 #     --add-host=host.docker.internal:host-gateway \
 #     --user "$(id -u):$(id -g)" -v ~/git:/repos \
-#     -e ANSREVIEW_WEB_TOKEN=change-me ghcr.io/jwklijnsma/ansreview
+#     -e ANSREVIEW_WEB_TOKEN="$(openssl rand -base64 24)" ghcr.io/jwklijnsma/ansreview
+#
+#   As a systemd service (Podman Quadlet or Docker): see deploy/systemd/.
 #
 #   docker run --rm --user "$(id -u):$(id -g)" -v "$PWD:/repos/work" \
 #     ghcr.io/jwklijnsma/ansreview scan /repos/work
@@ -49,7 +51,8 @@ LABEL org.opencontainers.image.title="ansreview" \
 # - safe.directory: mounted repos belong to the host user, not to whoever runs in the
 #   container, and git would refuse them as "dubious ownership".
 # - $HOME is writable for any UID (docker --user, OpenShift's random UIDs), because
-#   ansible-lint keeps a cache there.
+#   ansible-lint keeps a cache there. ~/.cache/ansreview holds the ZIP uploads; mount a
+#   volume there to keep them (a new volume copies this folder's permissions).
 # hadolint ignore=DL3008
 RUN apt-get update \
  && apt-get install -y --no-install-recommends git tini ca-certificates \
@@ -57,6 +60,8 @@ RUN apt-get update \
  && git config --system --add safe.directory '*' \
  && useradd --uid 1000 --gid 0 --home-dir /home/ansreview --create-home --shell /usr/sbin/nologin ansreview \
  && chmod 1777 /home/ansreview \
+ && mkdir -p /home/ansreview/.cache/ansreview \
+ && chmod 1777 /home/ansreview/.cache /home/ansreview/.cache/ansreview \
  && mkdir -p /repos \
  && chmod 0775 /repos && chgrp 0 /repos
 

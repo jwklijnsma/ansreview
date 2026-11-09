@@ -1,0 +1,50 @@
+# ansreview web UI as a systemd service on a Docker host.
+# (On RHEL/Fedora with Podman, use ansreview.container instead.)
+#
+#   sudo mkdir -p /etc/ansreview
+#   sudo install -m 600 ansreview.env.example /etc/ansreview/ansreview.env   # set the token
+#   sudo cp ansreview-docker.service /etc/systemd/system/ansreview.service
+#   sudo systemctl edit ansreview      # optional: change REPOS, RUN_AS, PORT (see below)
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now ansreview
+#
+# Then open http://localhost:8765/?token=<ANSREVIEW_WEB_TOKEN>.
+# Logs: journalctl -u ansreview -f       Update: sudo systemctl restart ansreview
+
+[Unit]
+Description=ansreview: review Ansible code with ansible-lint and a local Ollama model
+Documentation=https://github.com/jwklijnsma/ansreview
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+# Change these with `systemctl edit ansreview`:
+#   REPOS   folder with the repositories to review
+#   RUN_AS  uid:gid that owns REPOS, so reports and fixes are written as that user
+#   PORT    port on 127.0.0.1
+Environment=IMAGE=ghcr.io/jwklijnsma/ansreview:latest
+Environment=REPOS=/srv/ansible
+Environment=RUN_AS=1000:1000
+Environment=PORT=8765
+
+# Pull the newest image on every (re)start; keep going on the cached one when offline.
+ExecStartPre=-/usr/bin/docker pull ${IMAGE}
+ExecStartPre=-/usr/bin/docker rm -f ansreview
+ExecStart=/usr/bin/docker run --rm --name ansreview \
+  -p 127.0.0.1:${PORT}:8765 \
+  --add-host=host.docker.internal:host-gateway \
+  --user ${RUN_AS} \
+  --security-opt no-new-privileges --cap-drop ALL \
+  -v ${REPOS}:/repos \
+  -v ansreview-data:/home/ansreview/.cache/ansreview \
+  --env-file /etc/ansreview/ansreview.env \
+  ${IMAGE}
+# SIGINT (the image's stop signal) lets running jobs stop cleanly.
+ExecStop=/usr/bin/docker stop -t 30 ansreview
+Restart=on-failure
+RestartSec=10
+TimeoutStartSec=600
+
+[Install]
+WantedBy=multi-user.target
