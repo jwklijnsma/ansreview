@@ -5,45 +5,10 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>ansreview</title>
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="/app.css">
-  <script src="/app.js" defer></script>
+  <script type="module" crossorigin src="/app.js"></script>
+  <link rel="stylesheet" crossorigin href="/app.css">
 </head>
 <body>
-  <header class="topbar">
-    <div class="brand"><img src="/favicon.svg" alt=""> ansreview <small id="version"></small></div>
-    <div class="status-pills" id="status"></div>
-  </header>
-
-  <section id="login" hidden>
-    <div class="center-box">
-      <img src="/favicon.svg" alt="" width="44" height="44">
-      <h1>Access token needed</h1>
-      <p>Open the link that <code>ansreview serve</code> printed in the terminal, or paste the token here.</p>
-      <form id="login-form">
-        <input id="login-token" type="password" placeholder="token" autocomplete="off" required>
-        <button class="btn primary" type="submit">Sign in</button>
-      </form>
-      <div class="form-error" id="login-error"></div>
-    </div>
-  </section>
-
-  <div class="layout" id="app" hidden>
-    <aside class="sidebar">
-      <div class="upload-box" id="upload-box" hidden>
-        <button class="btn primary upload-btn" id="upload-btn" type="button">Upload ZIP for review</button>
-        <input id="upload-input" type="file" accept=".zip,application/zip" hidden>
-        <div class="upload-hint" id="upload-hint"></div>
-        <div class="progress" id="upload-progress" hidden><div></div></div>
-        <div class="upload-hint" id="upload-label" aria-live="polite"></div>
-      </div>
-      <h2>Repositories</h2>
-      <input class="search" id="repo-filter" type="search" placeholder="Filter…" aria-label="Filter repositories">
-      <ul class="repo-list" id="repos"></ul>
-    </aside>
-    <main id="main"></main>
-  </div>
-
-  <div class="dropzone" id="dropzone" hidden><div>Drop the ZIP to upload it for review</div></div>
-  <div class="toast" id="toast" role="status" hidden></div>
+  <div id="root"></div>
 </body>
 </html>

@@ -211,13 +211,72 @@ def test_scan_then_preview_fix(web, repos):
     assert before == after            # preview never touches the working tree
 
 
-def test_only_one_job_at_a_time(web):
-    app, base = web
-    app.jobs["busy"] = Job(id="busy", repo_id="0:infra", repo_name="infra", action="scan",
-                           argv=[], options={}, status="running")
-    r = requests.post(f"{base}/api/repos/0:infra/scan", json={}, headers=POST)
-    assert r.status_code == 409
-    app.jobs.pop("busy")
+def slow_python(tmp_path, seconds=60):
+    fake = tmp_path / "fake-python"
+    fake.write_text(f"#!{sys.executable}\nimport sys, time\n"
+                    f"print('working', sys.argv[3], flush=True)\ntime.sleep({seconds})\n")
+    fake.chmod(fake.stat().st_mode | stat.S_IEXEC)
+    return str(fake)
+
+
+def test_jobs_queue_in_order_and_queued_ones_can_be_cancelled(repos, ollama, tmp_path):
+    app = WebApp([repos], TOKEN, python=slow_python(tmp_path, 3))
+    srv, base = start(app)
+    try:
+        a = requests.post(f"{base}/api/repos/0:infra/scan", json={}, headers=POST).json()
+        b = requests.post(f"{base}/api/repos/0:infra/fix", json={"dry_run": True}, headers=POST).json()
+        c = requests.post(f"{base}/api/repos/0:infra/scan", json={"no_llm": True}, headers=POST).json()
+        # the same job twice is refused, a different one is queued
+        dup = requests.post(f"{base}/api/repos/0:infra/fix", json={"dry_run": True}, headers=POST)
+        assert dup.status_code == 409 and "already" in dup.json()["error"]
+        time.sleep(0.5)
+        jobs = {j["id"]: j for j in requests.get(f"{base}/api/jobs", headers=AUTH).json()["jobs"]}
+        assert jobs[a["id"]]["status"] == "running"
+        assert jobs[b["id"]]["status"] == "queued" and jobs[b["id"]]["position"] == 1
+        assert jobs[c["id"]]["position"] == 2
+        assert requests.post(f"{base}/api/jobs/{c['id']}/cancel", headers=POST).json()["status"] == "cancelled"
+        assert wait(base, a["id"])["status"] == "done"
+        assert wait(base, b["id"])["status"] == "done"
+        cj = requests.get(f"{base}/api/jobs/{c['id']}", headers=AUTH).json()
+        assert cj["status"] == "cancelled" and cj["started"] is None   # never ran
+        ran = [ln for j in (a, b) for ln in requests.get(f"{base}/api/jobs/{j['id']}", headers=AUTH).json()["lines"] if ln.startswith("working")]
+        assert ran == ["working scan", "working fix"]
+    finally:
+        srv.shutdown()
+
+
+def test_queue_limit(repos, ollama, tmp_path):
+    from ansreview.web import server as srvmod
+    app = WebApp([repos], TOKEN, python=slow_python(tmp_path))
+    try:
+        app.start_job("0:infra", "scan", {})
+        time.sleep(0.3)
+        for i in range(srvmod.MAX_PENDING):
+            app.start_job("0:infra", "scan", {"only": [f"roles/r{i}"]})
+        with pytest.raises(ApiError) as e:
+            app.start_job("0:infra", "scan", {"only": ["roles/one-too-many"]})
+        assert e.value.status == 429
+    finally:
+        for j in list(app.jobs.values()):
+            app.cancel_job(j.id)
+
+
+def test_finished_jobs_offer_downloads(web):
+    _, base = web
+    job = requests.post(f"{base}/api/repos/0:infra/scan", json={"no_lint": True}, headers=POST).json()
+    done = wait(base, job["id"])
+    names = [d["name"] for d in done["downloads"]]
+    assert names == ["report.md", "report.json", "report.sarif"]
+    r = requests.get(base + done["downloads"][0]["url"], headers=AUTH)
+    assert r.status_code == 200 and "infra-report.md" in r.headers["Content-Disposition"]
+    assert "AR001" in r.text
+    assert requests.get(f"{base}/api/repos/0:infra/artifacts/fix.patch", headers=AUTH).status_code == 404
+    assert requests.get(f"{base}/api/repos/0:infra/artifacts/..%2Fsite.yml", headers=AUTH).status_code == 404
+    job = requests.post(f"{base}/api/repos/0:infra/fix", json={"dry_run": True, "no_lint_fix": True}, headers=POST).json()
+    done = wait(base, job["id"])
+    assert [d["name"] for d in done["downloads"]] == ["fix.patch", "fix-report.md"]
+    assert done["downloads"][0].get("primary")
+    assert "no_log" in requests.get(base + done["downloads"][0]["url"], headers=AUTH).text
 
 
 def test_cancel_running_job(repos, ollama, tmp_path):

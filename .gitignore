@@ -5,3 +5,6 @@ __pycache__/
 build/
 dist/
 .ansreview/
+
+# web UI (React); the built bundle in src/ansreview/web/static/ IS committed
+web/node_modules/
