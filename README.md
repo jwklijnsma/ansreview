@@ -130,7 +130,7 @@ Every push to `main` publishes `ghcr.io/jwklijnsma/ansreview` (amd64 + arm64) wi
 docker run -d --name ansreview -p 127.0.0.1:8765:8765 \
   --add-host=host.docker.internal:host-gateway \
   --user "$(id -u):$(id -g)" -v ~/git:/repos \
-  -e ANSREVIEW_WEB_TOKEN="$(openssl rand -base64 24)" \
+  -e ANSREVIEW_WEB_TOKEN="$(openssl rand -hex 24)" \
   ghcr.io/jwklijnsma/ansreview
 # the link with the token: docker logs ansreview 2>&1 | grep open:
 
@@ -181,7 +181,7 @@ Ready-made units are in [`deploy/systemd/`](deploy/systemd/). They start the con
 mkdir -p ~/.config/containers/systemd ~/.config/ansreview
 cp deploy/systemd/ansreview.container ~/.config/containers/systemd/
 install -m 600 deploy/systemd/ansreview.env.example ~/.config/ansreview/ansreview.env
-sed -i "s|^ANSREVIEW_WEB_TOKEN=.*|ANSREVIEW_WEB_TOKEN=$(openssl rand -base64 24)|" ~/.config/ansreview/ansreview.env
+sed -i "s|^ANSREVIEW_WEB_TOKEN=.*|ANSREVIEW_WEB_TOKEN=$(openssl rand -hex 24)|" ~/.config/ansreview/ansreview.env
 systemctl --user daemon-reload
 systemctl --user start ansreview
 loginctl enable-linger "$USER"                           # keeps running without a login

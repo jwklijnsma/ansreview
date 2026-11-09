@@ -5,7 +5,7 @@
 #   docker run -d -p 127.0.0.1:8765:8765 \
 #     --add-host=host.docker.internal:host-gateway \
 #     --user "$(id -u):$(id -g)" -v ~/git:/repos \
-#     -e ANSREVIEW_WEB_TOKEN="$(openssl rand -base64 24)" ghcr.io/jwklijnsma/ansreview
+#     -e ANSREVIEW_WEB_TOKEN="$(openssl rand -hex 24)" ghcr.io/jwklijnsma/ansreview
 #
 #   As a systemd service (Podman Quadlet or Docker): see deploy/systemd/.
 #

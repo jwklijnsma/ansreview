@@ -3,7 +3,7 @@
 #
 #   sudo mkdir -p /etc/ansreview
 #   sudo install -m 600 ansreview.env.example /etc/ansreview/ansreview.env
-#   sudo sed -i "s|^ANSREVIEW_WEB_TOKEN=.*|ANSREVIEW_WEB_TOKEN=$(openssl rand -base64 24)|" /etc/ansreview/ansreview.env
+#   sudo sed -i "s|^ANSREVIEW_WEB_TOKEN=.*|ANSREVIEW_WEB_TOKEN=$(openssl rand -hex 24)|" /etc/ansreview/ansreview.env
 #   sudo cp ansreview-rootful.container /etc/containers/systemd/ansreview.container
 #   # edit the Volume= path and User=/Group= below, then:
 #   sudo systemctl daemon-reload
