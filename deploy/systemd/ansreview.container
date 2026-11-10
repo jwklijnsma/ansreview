@@ -1,4 +1,6 @@
 # ansreview web UI as a Podman Quadlet (RHEL 9/10, Fedora, any Podman >= 4.4).
+# ROOTLESS ONLY: put it in ~/.config/containers/systemd/, never in /etc/containers/systemd/.
+# As root it fails with exit 125 ("ID-mapped copy of layer"); use ansreview-rootful.container there.
 #
 # Rootless, as the user who owns the repositories (recommended):
 #   openssl rand -hex 24 | tr -d '\n' | podman secret create ansreview-token -
