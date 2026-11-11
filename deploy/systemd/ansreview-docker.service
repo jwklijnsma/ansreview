@@ -2,7 +2,7 @@
 # (On RHEL/Fedora with Podman, use ansreview.container instead.)
 #
 #   sudo mkdir -p /etc/ansreview
-#   sudo install -m 600 ansreview.env.example /etc/ansreview/ansreview.env   # set the token
+#   sudo install -m 600 ansreview.env.example /etc/ansreview/ansreview.env   # uncomment and set ANSREVIEW_WEB_TOKEN
 #   sudo cp ansreview-docker.service /etc/systemd/system/ansreview.service
 #   sudo systemctl edit ansreview      # optional: change REPOS, RUN_AS, PORT (see below)
 #   sudo systemctl daemon-reload

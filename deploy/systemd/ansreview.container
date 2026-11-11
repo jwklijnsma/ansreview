@@ -1,10 +1,12 @@
 # ansreview web UI as a Podman Quadlet (RHEL 9/10, Fedora, any Podman >= 4.4).
+# ROOTLESS ONLY: put it in ~/.config/containers/systemd/, never in /etc/containers/systemd/.
+# As root it fails with exit 125 ("ID-mapped copy of layer"); use ansreview-rootful.container there.
 #
 # Rootless, as the user who owns the repositories (recommended):
 #   openssl rand -hex 24 | tr -d '\n' | podman secret create ansreview-token -
 #   mkdir -p ~/.config/containers/systemd ~/.config/ansreview
 #   cp ansreview.container ~/.config/containers/systemd/
-#   install -m 600 ansreview.env.example ~/.config/ansreview/ansreview.env   # optional settings
+#   install -m 600 ansreview.env.example ~/.config/ansreview/ansreview.env   # required (may stay as is)
 #   systemctl --user daemon-reload
 #   systemctl --user start ansreview
 #   loginctl enable-linger "$USER"                    # keep it running without a login
@@ -46,8 +48,9 @@ Group=1000
 
 # The access token, from the Podman secret created above.
 Secret=ansreview-token,type=env,target=ANSREVIEW_WEB_TOKEN
-# Optional settings (model, context size, language); `-` = fine if it is missing.
-EnvironmentFile=-%h/.config/ansreview/ansreview.env
+# Settings (model, Ollama URL, ...). The file must exist: Quadlet hands this path to
+# `podman --env-file`, which has no "optional" form. An unchanged copy of the example is fine.
+EnvironmentFile=%h/.config/ansreview/ansreview.env
 # Ollama on this host; change it here for Ollama on another machine. On this host it
 # must listen on more than 127.0.0.1 for the container to reach it:
 # `systemctl edit ollama` -> [Service] Environment=OLLAMA_HOST=0.0.0.0

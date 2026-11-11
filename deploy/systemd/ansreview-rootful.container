@@ -3,7 +3,7 @@
 #
 #   openssl rand -hex 24 | tr -d '\n' | sudo podman secret create ansreview-token -
 #   sudo mkdir -p /etc/ansreview
-#   sudo install -m 600 ansreview.env.example /etc/ansreview/ansreview.env   # optional settings
+#   sudo install -m 600 ansreview.env.example /etc/ansreview/ansreview.env   # required (may stay as is)
 #   sudo cp ansreview-rootful.container /etc/containers/systemd/ansreview.container
 #   # edit the Volume= path and User=/Group= below, then:
 #   sudo systemctl daemon-reload
@@ -43,8 +43,9 @@ UserNS=host
 
 # The access token, from the Podman secret created above.
 Secret=ansreview-token,type=env,target=ANSREVIEW_WEB_TOKEN
-# Optional settings (model, context size, language); `-` = fine if it is missing.
-EnvironmentFile=-/etc/ansreview/ansreview.env
+# Settings (model, Ollama URL, ...). The file must exist: Quadlet hands this path to
+# `podman --env-file`, which has no "optional" form. An unchanged copy of the example is fine.
+EnvironmentFile=/etc/ansreview/ansreview.env
 # Ollama on this host (it must listen on more than 127.0.0.1). For Ollama on another
 # machine, change this line.
 Environment=OLLAMA_HOST=http://host.containers.internal:11434
