@@ -27,6 +27,8 @@ No code leaves your network: the model runs on your own Ollama server.
 
 </div>
 
+[![The ansreview web UI](assets/screenshots/findings.png){ loading=lazy }](assets/screenshots/findings.png)
+
 ## Three layers
 
 | Layer | What it finds |
