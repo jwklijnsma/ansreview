@@ -64,6 +64,8 @@ For mechanical rules: FQCN, free-form arguments, name casing and YAML
 formatting. Comments are kept. Limit it with `--lint-fix-rules fqcn,name`, or
 skip it with `--no-lint-fix`.
 
+[![A fix preview in the web UI: the fix report and the diff](../assets/screenshots/fix-diff.png){ loading=lazy }](../assets/screenshots/fix-diff.png)
+
 ## What you get
 
 Every changed YAML file must still parse, or it is reverted. Results are

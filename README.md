@@ -17,6 +17,8 @@ No code leaves your network. Reports come out as Markdown, JSON, SARIF and GitLa
 
 📖 **Documentation: <https://jwklijnsma.github.io/ansreview/>**
 
+![The ansreview web UI: findings of a scan](docs/assets/screenshots/findings.png)
+
 ## Features
 
 - **Scan** a repo, or only what a branch changed (`--diff origin/main`).
@@ -28,6 +30,18 @@ No code leaves your network. Reports come out as Markdown, JSON, SARIF and GitLa
   merge request up to date. No CI change in your repos.
 - **Container and service**: `ghcr.io/jwklijnsma/ansreview`, with ready-made Podman Quadlet
   and Docker systemd units.
+
+<details>
+<summary>More screenshots</summary>
+
+| | |
+|---|---|
+| ![A model finding with its suggested fix](docs/assets/screenshots/finding-detail.png) | ![The diff of a fix preview](docs/assets/screenshots/fix-diff.png) |
+| A model finding with its suggested fix and the code around it | The diff of a fix preview; nothing is committed |
+| ![The fix report](docs/assets/screenshots/fixes.png) | ![Background jobs](docs/assets/screenshots/jobs.png) |
+| The fix report: fixed, declined, needs a human | Background jobs with their downloads |
+
+</details>
 
 ## Quick start
 
